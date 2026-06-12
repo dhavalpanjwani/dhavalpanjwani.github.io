@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Outlook Polling — Event Deduplication (how it works today)</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --orange:#c2410c; --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:960px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:30px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 28px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:16px; color:var(--blue-d); margin:22px 0 6px;}
+  p{margin:8px 0;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px; line-height:1.5;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;} pre .n{color:#fca5a5;}
+  .callout{border-radius:10px; padding:14px 16px; margin:16px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);}
+  ol.steps{counter-reset:s; list-style:none; padding-left:0; margin:14px 0;}
+  ol.steps>li{position:relative; padding:10px 14px 10px 52px; margin:10px 0; background:#fff;
+       border:1px solid var(--line); border-radius:10px;}
+  ol.steps>li::before{counter-increment:s; content:counter(s); position:absolute; left:14px; top:12px;
+       width:26px; height:26px; background:var(--blue); color:#fff; border-radius:50%;
+       display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px;}
+  .drop{border-left:4px solid var(--red);} .emit{border-left:4px solid var(--green);}
+  .reclass{border-left:4px solid var(--amber);}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  .pill{display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:700;}
+  .pill-r{background:#fee2e2; color:var(--red);} .pill-g{background:#d1fae5; color:var(--green);}
+  .pill-o{background:#fed7aa; color:var(--orange);} .pill-a{background:#fef3c7; color:var(--amber);}
+  .flow{display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:14px 0; font-size:13px;}
+  .node{background:#fff; border:2px solid var(--blue-d); border-radius:8px; padding:8px 12px; font-weight:600;}
+  .node.start{background:#fed7aa; border-color:var(--orange);}
+  .node.dec{background:#fef3c7; border-color:var(--amber);}
+  .node.drop{background:#dbeafe; border-color:#1e40af; border-style:dashed;}
+  .node.emit{background:#a7f3d0; border-color:var(--green);}
+  .arr{color:var(--muted); font-weight:700;}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Outlook Polling — Event Deduplication</h1>
+  <p class="sub">How the Microsoft Outlook 365 connector deduplicates polled events today · source of truth: <code>periodic-uipath-microsoft-outlook365/app/element/event-hooks/Messages_events.ts</code> (inlined as a <code>TypeScriptHook</code> in <code>Message.json</code>)</p>
+
+  <div class="callout c-blue">
+    <span class="t">TL;DR</span>
+    Dedup is <b>connector-side</b>, run by a TypeScript post-hook on <b>every emitted event</b>. State lives in the per-connection <b>hook-state blob</b> as a map of <code>"timestamp|eventType|object" → [recordIds]</code>. For <span class="pill pill-o">EMAIL_RECEIVED</span> a repeated <code>id</code> alone is a duplicate; for other event types a repeated <code>id</code> <b>within ±20s</b> is a duplicate. State is kept for 24h (max 5000 keys).
+  </div>
+
+  <h2>1 · Where dedup runs</h2>
+  <p>The Message poller's configuration defines two post-hook pipelines. Dedup is the third hook in the <b>CURATED</b> pipeline:</p>
+  <div class="flow">
+    <span class="node">poll vendor (Graph)</span><span class="arr">→</span>
+    <span class="node">GENERIC: normalize eventType</span><span class="arr">→</span>
+    <span class="node">CURATED: reject → classify (SENT/TRASHED/RECEIVED) → <b>TypeScriptHook (dedup)</b> → reject</span><span class="arr">→</span>
+    <span class="node emit">emit survivors</span>
+  </div>
+  <p class="small">The dedup hook is invoked <b>once per event</b> as events flow through the pipeline. It both reclassifies some <code>UPDATED</code> events and suppresses duplicates.</p>
+
+  <h2>2 · What the hook-state blob contains</h2>
+  <p>One encrypted JSON object <b>per <code>elementInstanceId</code></b> (connection), stored in object storage (bucket <code>gallup-&lt;env&gt;-job-engine-state</code>). The dedup hook keeps everything under <code>processedRecords</code>:</p>
+<pre><span class="c">// hook-state blob for instanceId 267986 (decrypted view)</span>
+{
+  <span class="k">"processedRecords"</span>: {
+    <span class="c">// key = `${lastModifiedDateTime ISO}|${eventType}|${objectName}`   value = [ recordId, ... ]</span>
+    <span class="s">"2026-06-11T10:00:00.000Z|EMAIL_RECEIVED|Message"</span>: [ <span class="s">"AAMkAGI2...id1"</span> ],
+    <span class="s">"2026-06-11T10:04:11.000Z|UPDATED|Message"</span>:        [ <span class="s">"AAMkAGI2...id2"</span>, <span class="s">"AAMkAGI2...id3"</span> ],
+    <span class="s">"2026-06-11T10:03:47.000Z|EMAIL_SENT|Message"</span>:     [ <span class="s">"AAMkAGI2...id4"</span> ]
+  }
+}</pre>
+  <table>
+    <tr><th>Part</th><th>Source</th><th>Notes</th></tr>
+    <tr><td>timestamp (key part 1)</td><td><code>event.lastModifiedDateTime</code> → ISO UTC</td><td>the record's last-modified time, not a hash</td></tr>
+    <tr><td>eventType (key part 2)</td><td>e.g. <code>EMAIL_RECEIVED</code>, <code>UPDATED</code>, <code>EMAIL_SENT</code>, <code>EMAIL_TRASHED</code></td><td>set by the classify hook before dedup</td></tr>
+    <tr><td>object (key part 3)</td><td><code>_context.currentObjectName</code></td><td>the parameterized object (e.g. <code>Message</code>)</td></tr>
+    <tr><td>value</td><td><code>event.id</code></td><td>array of record IDs seen under that key</td></tr>
+  </table>
+  <p class="small">The blob is per-connection and may also hold other hooks' keys alongside <code>processedRecords</code>.</p>
+
+  <h2>3 · Per-poll lifecycle</h2>
+  <div class="flow">
+    <span class="node start">poll start</span><span class="arr">→</span>
+    <span class="node">GET blob · decrypt · JSON.parse (once)</span><span class="arr">→</span>
+    <span class="node">hook mutates <code>processedRecords</code> in-memory across all events</span><span class="arr">→</span>
+    <span class="node">PUT blob · encrypt (once, if changed)</span><span class="arr">→</span>
+    <span class="node emit">poll end</span>
+  </div>
+  <p class="small">gallup loads the whole blob once at the start of a poll and writes it once at the end (write skipped if a hash of the state is unchanged). All matching happens in memory.</p>
+
+  <h2>4 · The per-event algorithm</h2>
+  <p>For each event reaching the dedup hook:</p>
+  <ol class="steps">
+    <li>Extract <code>recordId = event.id</code>, <code>eventType</code>, <code>eventCreatedDate = event.lastModifiedDateTime</code> (→ ISO UTC), <code>currentObjectName</code>. If the date is invalid, <b>skip</b> the event.</li>
+    <li class="reclass"><b>UPDATED → EMAIL_RECEIVED reclassification.</b> If <code>eventType === UPDATED</code> and the mail is in the inbox (not Deleted / Sent / Outbox) <b>and</b> was created within the last 3&nbsp;min (<code>modified − created ≤ 3&nbsp;min</code>) <b>and</b> is not already a duplicate <code>EMAIL_RECEIVED</code> → relabel it <span class="pill pill-o">EMAIL_RECEIVED</span>. <span class="small">(Wrapped in try/catch — on any error the original type is preserved.)</span></li>
+    <li class="drop"><b>isEventProcessed (exact key).</b> If <code>processedRecords["date|eventType|object"]</code> already contains this <code>recordId</code> → <span class="pill pill-r">DROP</span> (return <code>{}</code>).</li>
+    <li class="drop"><b>isDuplicateEvent (scan).</b> Scan keys with the same <code>eventType</code> + <code>object</code>:
+      <div class="callout c-amber" style="margin:10px 0 4px;">
+        <span class="t">EMAIL_RECEIVED → id-only</span>
+        If <code>recordId</code> appears under <b>any</b> matching key → duplicate. Timestamp is ignored. <span class="small">(Load-bearing: stops a later-modified received email re-emitting as "received".)</span>
+      </div>
+      <div class="callout c-amber" style="margin:6px 0 0;">
+        <span class="t">All other types → id + ±20s</span>
+        Duplicate only if <code>recordId</code> matches <b>and</b> <code>|thisTimestamp − storedTimestamp| ≤ 20&nbsp;000&nbsp;ms</code>.
+      </div>
+      <p style="margin:8px 0 0;">If duplicate → <span class="pill pill-r">DROP</span>.</p>
+    </li>
+    <li class="emit"><b>Otherwise — EMIT.</b> Append <code>recordId</code> under its key (<code>addEventToProcessedRecords</code>), run cleanup (§5), write <code>processedRecords</code> back to <code>hookState</code>, set <code>event.objectId</code> / <code>event.eventType</code>, and return the event. <span class="pill pill-g">EMIT</span></li>
+  </ol>
+
+  <h3>Decision at a glance</h3>
+  <div class="flow">
+    <span class="node start">event</span><span class="arr">→</span>
+    <span class="node reclass" style="background:#fef3c7;border:2px solid var(--amber)">maybe reclassify UPDATED→RECEIVED</span><span class="arr">→</span>
+    <span class="node dec">already processed / duplicate?</span>
+    <span class="arr">yes →</span><span class="node drop">drop (return {})</span>
+    <span class="arr">no →</span><span class="node emit">record + emit</span>
+  </div>
+
+  <h2>5 · How long is state kept? (retention &amp; cleanup)</h2>
+  <p><code>cleanProcessedRecords</code> runs <b>on every emit</b> (right after a new record is recorded) and applies <b>two bounds</b>:</p>
+<pre><span class="kw">const</span> MAX_RECORDS_STORED_IN_HOOK_CONTEXT = <span class="n">5000</span>;
+<span class="kw">const</span> thresholdDate = now;  thresholdDate.setUTCHours(now.getUTCHours() - <span class="n">24</span>);  <span class="c">// 24h ago</span>
+<span class="c">// 1) time sweep — delete keys whose date-part ≤ now − 24h (keys sorted; stop at first recent)</span>
+<span class="c">// 2) size cap  — if still &gt; 5000 keys, delete the oldest until under the cap</span></pre>
+  <table>
+    <tr><th>Bound</th><th>Value</th><th>Measured against</th></tr>
+    <tr><td>Time</td><td><b>24 hours</b></td><td>the <b>record's own timestamp</b> (the <code>lastModifiedDateTime</code> baked into the key) — <i>not</i> insertion time</td></tr>
+    <tr><td>Size cap</td><td><b>5000 keys</b></td><td>distinct <code>date|eventType|object</code> <b>keys</b> (not individual record IDs — each key holds an array of IDs, so total IDs can exceed 5000)</td></tr>
+  </table>
+  <p><b>An entry survives until its record timestamp is older than 24h, <i>or</i> until the 5000-key cap evicts the oldest — whichever comes first.</b></p>
+  <div class="callout c-amber">
+    <span class="t">Clarifications</span>
+    <ul style="margin:6px 0 0;">
+      <li>These limits are <b>connector-side</b>, hard-coded in <code>Messages_events.ts</code> — not a platform/config setting.</li>
+      <li>The <b>blob itself persists indefinitely</b> in object storage (until the job/connection is deleted via <code>DeleteJobHttpHandler</code>); only the <b>per-key entries inside <code>processedRecords</code></b> age out.</li>
+      <li><b>Why 24h:</b> it comfortably exceeds any look-back window (seconds–minutes) <i>and</i> absorbs vendor <b>system-level re-emits</b> that can re-surface a record hours later (e.g. change-history-style endpoints), so those still get deduped.</li>
+    </ul>
+  </div>
+  <div class="callout c-green">
+    <span class="t">In the proposed platform design</span>
+    This swept-on-write map is replaced by a <b>native 24h TTL</b> per key (Option 2 / keyed store), where expiry is automatic instead of computed on every emit.
+  </div>
+
+  <h2>6 · Worked example</h2>
+  <table>
+    <tr><th>#</th><th>Event in</th><th>Check</th><th>Result</th></tr>
+    <tr><td>1</td><td><code>id1</code>, EMAIL_RECEIVED, 10:00:00</td><td>unseen</td><td><span class="pill pill-g">EMIT</span> + record</td></tr>
+    <tr><td>2</td><td><code>id1</code> re-fetched (look-back), EMAIL_RECEIVED, 10:00:00</td><td>id seen for RECEIVED</td><td><span class="pill pill-r">DROP</span> (id-only)</td></tr>
+    <tr><td>3</td><td><code>id1</code> later read → UPDATED, 10:06:00</td><td>id seen for RECEIVED (id-only) blocks re-receive; as UPDATED it's a new key</td><td><span class="pill pill-g">EMIT</span> as UPDATED</td></tr>
+    <tr><td>4</td><td><code>id1</code> re-fetched, UPDATED, 10:06:00</td><td>id + same timestamp (≤20s)</td><td><span class="pill pill-r">DROP</span></td></tr>
+    <tr><td>5</td><td><code>id1</code>, UPDATED, 10:11:00 (real new edit)</td><td>id seen but Δt &gt; 20s</td><td><span class="pill pill-g">EMIT</span> as UPDATED</td></tr>
+  </table>
+
+  <h2>7 · Scaling implication</h2>
+  <div class="callout c-red">
+    <span class="t">Why this is the platform-dedup concern</span>
+    Dedup runs <b>per event</b>, and <code>isDuplicateEvent</code> <b>iterates over all keys</b> in <code>processedRecords</code> each time → roughly <b>O(events × keys)</b> per poll, all in-memory after loading (and then re-encrypting + rewriting) the <b>entire</b> blob. At high event volume the blob grows and this becomes expensive. The proposed platform design moves dedup to a <b>keyed store</b> (e.g. Redis) where each check is an O(1) <code>GET dedupKey</code> with native 24h TTL — see <i>Option&nbsp;1 vs Option&nbsp;2</i> in the design proposal.
+  </div>
+
+  <div class="callout c-green">
+    <span class="t">Mapping to the proposed contract</span>
+    Today's behaviour maps cleanly onto <code>dedupReferenceFields</code>: <span class="pill pill-o">EMAIL_RECEIVED</span> = id-only (immutable key) and <span class="pill pill-a">UPDATED</span> = id + <code>lastModifiedDateTime</code> (+ <code>folderId</code>) — i.e. the field list <i>is</i> the rule, and the ±20s window becomes an optional tolerance.
+  </div>
+
+  <div class="footer">
+    <b>Code references</b><br/>
+    Hook source · <code>periodic-uipath-microsoft-outlook365/app/element/event-hooks/Messages_events.ts</code> (functions <code>addEventToProcessedRecords</code>, <code>isEventProcessed</code>, <code>isDuplicateEvent</code>, <code>cleanProcessedRecords</code>)<br/>
+    Inlined into poller config · <code>…/app/element/standard-resources/Message.json → metadata.events.polling.configuration.postHookPipelines[CURATED]</code><br/>
+    Hook-state storage · gallup <code>app/src/lib/hook-state/GenericHookStateDao.ts</code> · bucket <code>gallup-&lt;env&gt;-job-engine-state</code> · load/save <code>app/src/lib/engine/executor/AsyncPollingExecutor.ts</code>
+  </div>
+
+</div>
+</body>
+</html>
