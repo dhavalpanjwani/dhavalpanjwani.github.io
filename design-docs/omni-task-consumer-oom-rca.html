@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RCA — gallupx-omni-task-consumer OOM crash loop (staging)</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #1a1d27; --panel2: #232734; --text: #e6e8ee;
+    --muted: #9aa3b2; --accent: #5b9dff; --good: #3fb950; --bad: #f85149;
+    --warn: #d29922; --border: #2d3240; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 48px 24px 96px; }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 22px; margin: 48px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 17px; margin: 28px 0 10px; color: var(--accent); }
+  p { margin: 12px 0; }
+  code { font-family: var(--mono); font-size: 0.88em; background: var(--panel2); padding: 1px 6px; border-radius: 4px; }
+  pre { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.5; }
+  .subtitle { color: var(--muted); font-size: 15px; margin: 0 0 24px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 24px; color: var(--muted); font-size: 13px; margin-bottom: 32px; }
+  .meta b { color: var(--text); font-weight: 600; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 20px 24px; margin: 18px 0; }
+  .tldr { border-left: 4px solid var(--accent); }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  td.num, th.num { text-align: right; font-family: var(--mono); }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 9px; border-radius: 999px; font-weight: 600; }
+  .pill.bad { background: rgba(248,81,73,.15); color: var(--bad); }
+  .pill.good { background: rgba(63,185,80,.15); color: var(--good); }
+  .pill.warn { background: rgba(210,153,34,.15); color: var(--warn); }
+  .bad-text { color: var(--bad); } .good-text { color: var(--good); } .warn-text { color: var(--warn); }
+  ul, ol { margin: 12px 0; padding-left: 22px; }
+  li { margin: 6px 0; }
+  .step { display: flex; gap: 16px; margin: 0; padding: 18px 0; border-bottom: 1px solid var(--border); }
+  .step:last-child { border-bottom: none; }
+  .step .n { flex: 0 0 34px; height: 34px; border-radius: 50%; background: var(--panel2); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-weight: 700; color: var(--accent); }
+  .step .body { flex: 1; }
+  .step .body h4 { margin: 4px 0 6px; font-size: 16px; }
+  .step .body p { margin: 4px 0; color: var(--muted); font-size: 14.5px; }
+  .step .body .out { color: var(--text); }
+  .flow { font-family: var(--mono); font-size: 13px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .flow .arrow { color: var(--accent); }
+  .hl { background: rgba(91,157,255,.12); padding: 0 3px; border-radius: 3px; }
+  footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border); padding-top: 18px; }
+  .legend { font-size: 13px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Root Cause Analysis</h1>
+  <p class="subtitle"><code>gallupx-omni-task-consumer</code> OOM crash loop — staging (az-eu-stage-0)</p>
+  <div class="meta">
+    <span><b>Service:</b> gallupx-omni-task-consumer</span>
+    <span><b>Environment:</b> staging only (shared-stg-svc-ne-01-b-aks)</span>
+    <span><b>Status:</b> <span class="pill bad">Root cause confirmed</span></span>
+    <span><b>Date:</b> 2026-06-23</span>
+  </div>
+
+  <div class="card" style="border-left:4px solid var(--bad)">
+    <h3 style="margin-top:0" class="bad-text">⚠ Still ongoing</h3>
+    <p style="margin-bottom:6px">As of the latest check (<b>2026-06-23 06:07 UTC</b>) the crash loop is <b>active and unmitigated</b>. All 16 live pods are still <code>OOMKilled</code>, restart counts now <b>500–612</b> (up from 470–572 the prior day), with the most recent kills seconds-to-minutes before the check:</p>
+    <pre>pdrgd  restarts=567  last OOM 24s ago
+q7hdr  restarts=535  last OOM 78s ago
+rqwd8  restarts=553  last OOM 2m ago
+qjq79  restarts=612  last OOM 4m ago
+6r2gf  restarts=539  lastOOM=2026-06-23T05:44:42Z  reason=OOMKilled</pre>
+    <p class="legend">Rate is steady at roughly one OOM every ~20 min per pod (≈ one every 1–2 min across the fleet). No change in trajectory — the fix has not yet been applied.</p>
+  </div>
+
+  <div class="card tldr">
+    <h3 style="margin-top:0">TL;DR</h3>
+    <p>All 16 omni-task-consumer pods in staging were crash-looping — <b>~500 restarts/pod over ~2.5 days</b>, OOMKilled roughly every 14–40 min. The kill is an <b class="bad-text">off-heap memory blowup, not a JS-heap leak</b>: the consumer reads each poll-data blob <b>fully into memory</b> (<code>bodyToString</code> → <code>Buffer.concat</code>) before parsing, and a class of oversized blobs (<code>*-eventfilter.json</code>, up to <b>500&nbsp;MB</b>) — multiplied by 8-way per-pod concurrency — pushes RSS past the 2&nbsp;GiB container limit, triggering a kernel <code>SIGKILL</code>. Prod runs identical code and limits; it is spared only because its poll-data blobs stay small. <b>This is a data-shaped bug, not a code regression.</b></p>
+  </div>
+
+  <h2>1. Symptoms</h2>
+  <ul>
+    <li>All 16 <code>gallupx-omni-task-consumer-865bc586cc-*</code> pods <span class="pill bad">OOMKilled</span> (exit 137), 440–572 restarts each.</li>
+    <li>Cadence: roughly <b>one OOM every 1–2 minutes</b> across the fleet; each pod survives ~14–40 min.</li>
+    <li><b>Isolated to omni</b> — every other gallupx consumer (engine, event, webhook, tick, cron, fps, http, notification) had <b>0 restarts</b>.</li>
+    <li>No application <code>FATAL</code> error and no <code>exceptions</code> in App Insights — the OOM is a kernel kill with no app-level telemetry.</li>
+    <li>Production (<code>gallupx_az-eu-prod-0</code>) completely healthy on the same build.</li>
+  </ul>
+
+  <h2>2. Root Cause</h2>
+
+  <h3>The mechanism</h3>
+  <p>Each omni trace task reads its poll-data blob <b>entirely into memory</b> before use. The blob body is accumulated as raw <code>Buffer</code> chunks and then concatenated into one contiguous buffer — an <b>off-heap</b> allocation that peaks at roughly <b>2× the blob size</b>:</p>
+  <div class="flow">
+    BaseTraceEventHandler.retrieveFromBlobStorage()<br>
+    &nbsp;&nbsp;<span class="arrow">→</span> BlobStorageManager.getObjectCore() <span style="color:var(--muted)">(BlobStorageManager.ts:271)</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;<span class="arrow">→</span> JSON.parse(<span class="hl">await bodyToString(stream)</span>) <span style="color:var(--muted)">(Converter.ts:11)</span><br>
+    <br>
+    bodyToString: chunks.push(chunk) <span style="color:var(--muted)">// every chunk held off-heap</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="arrow">→</span> <span class="hl">Buffer.concat(chunks)</span> <span style="color:var(--muted)">// 2nd full-size copy</span><br>
+    &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="arrow">→</span> .toString('utf8') <span style="color:var(--muted)">// 3rd copy (heap)</span>
+  </div>
+  <p>With <code>GALLUP_OMNI_TASK_CONSUMER_COUNT=8</code>, up to 8 blobs are read concurrently per pod. A few concurrent large blobs (or one 500&nbsp;MB blob doubled by <code>Buffer.concat</code>) drive <code>arrayBuffers</code> past the <b>2&nbsp;GiB</b> cgroup limit. The process is <code>SIGKILL</code>ed <b>during the buffer accumulation — before <code>JSON.parse</code> even runs</b>, which is why the JS heap never grows and there is no V8 fatal error.</p>
+
+  <h3>The trigger (why staging, not prod)</h3>
+  <table>
+    <tr><th>Factor</th><th>Finding</th></tr>
+    <tr><td>Code</td><td>Identical on the OOM path. Staging 3.35.3 ≈ prod 3.37.1 (#2679, #2684 in both; UserFilters memory fix unmerged in both). <span class="pill good">ruled out</span></td></tr>
+    <tr><td>Memory limit</td><td>Both 2&nbsp;Gi / heap cap 1792&nbsp;MB. <span class="pill good">ruled out</span></td></tr>
+    <tr><td>Feature flag</td><td><code>shouldTraceFullEventData</code> off since Apr 20; unrelated to the blob-read path. <span class="pill good">ruled out</span></td></tr>
+    <tr><td>Data</td><td><b class="bad-text">The differentiator.</b> A staging org produces huge filtered-event poll payloads stored as oversized <code>*-eventfilter.json</code> blobs. Prod's poll-data blobs stay small.</td></tr>
+  </table>
+
+  <h3>The oversized objects</h3>
+  <p>Container <code>gallup-az-eu-stage-0-poller-data</code> — 102,306 blobs, 5.3&nbsp;GB total:</p>
+  <table>
+    <tr><th>Size</th><th>Object</th></tr>
+    <tr><td class="num bad-text">500.2 MB</td><td><code>…#23fa0764…-page-1-574-eventfilter.json</code></td></tr>
+    <tr><td class="num">204.9 MB</td><td><code>…#575c0b18…-page-1-957-eventfilter.json</code></td></tr>
+    <tr><td class="num">167.9 MB</td><td><code>…#15e001e5…-page-1-324-eventfilter.json</code></td></tr>
+    <tr><td class="num">144.2 MB</td><td><code>…#36277d50…-page-1-102-eventfilter.json</code></td></tr>
+    <tr><td class="num">118.5 MB</td><td><code>…#5fbb4d84…-page-1-358-eventfilter.json</code></td></tr>
+  </table>
+  <p class="legend">6 blobs &gt; 100 MB, 65 in the 10–100 MB band, 7,198 <code>eventfilter</code> blobs total. Plain <code>-page-N.json</code> blobs cap at ~2 MB — the giant ones are exclusively the <b><code>eventfilter</code></b> variant. (The largest are also 7–12 days old: the container is not being cleaned up — a separate TTL concern.)</p>
+
+  <h3>The decisive evidence</h3>
+  <p>A 1-second <code>process.memoryUsage()</code> sampler captured the memory breakdown right up to a kill:</p>
+  <table>
+    <tr><th>time</th><th class="num">rss</th><th class="num">heapUsed</th><th class="num">external</th><th class="num">arrayBuffers</th></tr>
+    <tr><td>22:06:47</td><td class="num">307</td><td class="num">115</td><td class="num">7</td><td class="num">4</td></tr>
+    <tr><td>22:06:48</td><td class="num">424</td><td class="num">105</td><td class="num">156</td><td class="num">152</td></tr>
+    <tr><td>22:06:49</td><td class="num">562</td><td class="num">110</td><td class="num">293</td><td class="num">290</td></tr>
+    <tr><td>22:06:50</td><td class="num">718</td><td class="num">108</td><td class="num bad-text">449</td><td class="num bad-text">445</td></tr>
+    <tr><td colspan="5" class="bad-text">→ OOMKilled (RSS continued past 2048 MB before next sample)</td></tr>
+  </table>
+  <p class="legend">All values in MB. <b>heapUsed is flat (~110 MB)</b> while <b>arrayBuffers explodes ~145 MB/s</b> and <code>external ≈ arrayBuffers</code> — i.e. essentially all growth is raw off-heap Buffers. This is the signature that disproved a JS-heap leak and pinned the blob-read buffering.</p>
+
+  <h2>3. Why earlier hypotheses were wrong</h2>
+  <p>Several plausible explanations were investigated and <b>discarded with evidence</b> — recorded here so they aren't re-tried:</p>
+  <ul>
+    <li><span class="pill warn">rejected</span> <b>Poison message redelivery.</b> No high-dequeue-count messages exist because the OOM is a gradual per-message buffer spike, and <code>SIGKILL</code> bypasses the consumer's retry/delete logic entirely.</li>
+    <li><span class="pill warn">rejected</span> <b>TraceStore 404 storm / timeouts.</b> The 404s were confounded by a staging-only "drop 2XX dependencies" telemetry change; the 90s timeouts were a one-off 6-hour incident that did not correlate with the continuous OOMs.</li>
+    <li><span class="pill warn">rejected</span> <b>JS-heap span-stringification</b> (the failure mode the <code>user-filters-trace-memory-optimization</code> design targets). The live trace shows <code>heapUsed</code> never grows — that fix would not prevent this off-heap blowup.</li>
+    <li><span class="pill warn">rejected</span> <b>Version regression.</b> Confirmed identical OOM-path code between the staging and prod builds.</li>
+  </ul>
+
+  <h2>4. How the issue was found</h2>
+  <p>The investigation moved from "are they restarting?" to a code-located, data-confirmed root cause. Key steps:</p>
+
+  <div class="card">
+    <div class="step"><div class="n">1</div><div class="body">
+      <h4>Confirm the symptom (kubectl)</h4>
+      <p class="out">All 16 omni pods <code>OOMKilled</code> (exit 137), 440–572 restarts; every other consumer at 0. Isolated to omni.</p>
+    </div></div>
+    <div class="step"><div class="n">2</div><div class="body">
+      <h4>Characterize the memory shape (live /proc + top)</h4>
+      <p class="out">Baseline ~250 MB; <b>reclaimable spikes</b> to &gt;1 GB then GC'd back. Pattern = spiky transient allocation, not a steady leak. Container limit 2 GiB; <code>--max-old-space-size=1792</code>.</p>
+    </div></div>
+    <div class="step"><div class="n">3</div><div class="body">
+      <h4>Rule out application errors (App Insights / KQL)</h4>
+      <p class="out">Zero exceptions in both staging and prod; only benign health-probe warnings. Confirmed the OOM is invisible to app telemetry — it's a kernel kill. Also established code parity between builds via git.</p>
+    </div></div>
+    <div class="step"><div class="n">4</div><div class="body">
+      <h4>Prove on-heap vs off-heap (instrumented debug pod + sampler)</h4>
+      <p class="out">This was the pivotal step. A plain heap snapshot wouldn't help (it only captures the JS heap; off-heap Buffers appear as an opaque aggregate), and the spikes were too fast and rare to catch interactively. So instead of inspecting a single moment, we recorded a <b>continuous memory timeline</b> and let the pod kill itself.</p>
+
+      <p class="out" style="margin-top:12px"><b>a. Isolated debug replica.</b> Rather than touch the 16 live pods, we exported the live Deployment spec, then created a 1-replica copy — <code>gallupx-omni-task-consumer-debug</code> — with a distinct label/selector so the original Deployment and its HPA would ignore it. Crucially it kept the same <code>SERVICE_NAME</code>, so it consumed from the <b>same task queue</b> and therefore reproduced the exact same OOM (it OOM'd ~26 times over 6h), all without disturbing production traffic or the live workload.</p>
+
+      <p class="out" style="margin-top:12px"><b>b. The sampler.</b> A tiny JS file was mounted into the pod via a ConfigMap and loaded <b>before the app</b> using <code>NODE_OPTIONS="--require /etc/memsampler/memsampler.js …"</code>. Running inside the real process, it printed the full memory breakdown to stdout once per second:</p>
+      <pre>setInterval(() => {
+  const m = process.memoryUsage();
+  console.log(JSON.stringify({
+    memlog: 1, rssMB: mb(m.rss), heapUsedMB: mb(m.heapUsed),
+    externalMB: mb(m.external), arrayBuffersMB: mb(m.arrayBuffers),
+    ts: new Date().toISOString(),
+  }));
+}, 1000);</pre>
+
+      <p class="out" style="margin-top:12px"><b>c. Capture at the kill.</b> Because the OOM is a kernel <code>SIGKILL</code>, the dying process can't log anything itself — but the per-second lines are already on stdout. A watcher polled the pod's <code>restartCount</code>; the instant it incremented, it read <code>kubectl logs --previous</code> — the last container's full stdout, retained by the kubelet across the restart — giving the second-by-second memory trail right up to the moment of death.</p>
+
+      <p class="out" style="margin-top:12px"><b>d. Result.</b> The trail showed <span class="hl">heapUsed flat at ~110 MB while arrayBuffers exploded 4 → 445+ MB in three seconds</span>, with <code>external ≈ arrayBuffers</code>. That is the unambiguous signature of an <b>off-heap Buffer</b> blowup — definitively excluding a JS-heap leak and pointing straight at raw buffer allocation in the I/O path.</p>
+    </div></div>
+    <div class="step"><div class="n">5</div><div class="body">
+      <h4>Locate the Buffer source (code read)</h4>
+      <p class="out">Traced the path to <code>BlobStorageManager.getObjectCore</code> → <code>bodyToString</code>, which accumulates every chunk and <code>Buffer.concat</code>s the whole blob. Death occurs <b>during accumulation, before parse</b> — matching the flat-heap trace exactly.</p>
+    </div></div>
+    <div class="step"><div class="n">6</div><div class="body">
+      <h4>Identify the oversized objects (object store query)</h4>
+      <p class="out">Listed the <code>gallup-az-eu-stage-0-poller-data</code> container by Content-Length: the big blobs are all <code>*-eventfilter.json</code>, topping out at <b>500 MB</b> — which, buffered whole at 8-way concurrency, fully accounts for the 2 GiB breach.</p>
+    </div></div>
+  </div>
+  <p class="legend">A dead-end worth noting: an attempt to log blob sizes by monkey-patching the Azure SDK's <code>download()</code> in the preload broke the pod's startup probe (it pre-empted the app's OpenTelemetry instrumentation). The size data was obtained more safely by querying the object store directly.</p>
+
+  <h2>5. Recommended Fix</h2>
+  <ol>
+    <li><b>Stream-parse blobs</b> instead of buffering whole — the codebase already exposes <code>getObjectStream</code>; pair it with a streaming JSON parser so memory stays bounded regardless of blob size. <span class="pill good">primary</span></li>
+    <li><b>Content-Length size guard</b> — check size before download; skip tracing (or use a claim-check pointer) above a threshold (e.g. 50–100 MB).</li>
+    <li><b>Avoid the multi-copy</b> — <code>Buffer.concat</code> + <code>.toString</code> triples peak memory; decode incrementally.</li>
+    <li><b>Bound concurrency</b> — lower <code>GALLUP_OMNI_TASK_CONSUMER_COUNT</code> so concurrent large reads don't stack.</li>
+    <li><b>Blob TTL / cleanup</b> — the poller-data container holds 5.3 GB including week-old blobs; investigate retention separately.</li>
+  </ol>
+
+  <h2>6. Appendix — full blob keys for search &amp; analysis</h2>
+  <p>Largest 30 objects in the poll-data container, with full keys and exact byte sizes so they can be looked up / re-analyzed later. The key format is <code>{partition}#{pollTimestamp}#{pollExecutionId}-page-{n}[-{count}-eventfilter].json</code>; the giant ones are all the <code>-eventfilter</code> variant.</p>
+  <table>
+    <tr><th>Storage account</th><td><code>intsvcstggalnestorage</code></td></tr>
+    <tr><th>Container</th><td><code>gallup-az-eu-stage-0-poller-data</code></td></tr>
+    <tr><th>Snapshot</th><td>2026-06-23 · 102,306 blobs · 5.3 GB total · 6 blobs &gt; 100 MB · 7,198 <code>eventfilter</code> blobs</td></tr>
+  </table>
+
+  <p class="legend">Reproduce / re-scan with:</p>
+  <pre>CS=$(kubectl --context shared-stg-svc-ne-01-b-aks -n intsvcs \
+      get secret gallupx-config -o jsonpath='{.data.storageConnectionString}' | base64 -d)
+az storage blob list --connection-string "$CS" \
+   --container-name gallup-az-eu-stage-0-poller-data --num-results 100000 \
+   --query "reverse(sort_by([].{n:name,b:properties.contentLength}, &b))[:30]" -o table</pre>
+
+  <table>
+    <tr><th class="num">Bytes</th><th class="num">Size</th><th>Last modified (UTC)</th><th>Full key</th></tr>
+    <tr><td class="num">524,527,728</td><td class="num bad-text">500.2 MB</td><td>2026-06-17T00:21:31</td><td><code>1#2026-06-11T05:07Z#23fa0764-205c-4b78-924d-747e8e50d5a9-page-1-574-eventfilter.json</code></td></tr>
+    <tr><td class="num">214,819,375</td><td class="num">204.9 MB</td><td>2026-06-16T06:50:07</td><td><code>1#2026-06-16T06:49Z#575c0b18-2070-41b4-a1e4-923c3c1f77d5-page-1-957-eventfilter.json</code></td></tr>
+    <tr><td class="num">176,030,077</td><td class="num">167.9 MB</td><td>2026-06-16T06:50:12</td><td><code>1#2026-06-16T06:49Z#15e001e5-73f3-4fc5-b356-f3150d0ef2d6-page-1-324-eventfilter.json</code></td></tr>
+    <tr><td class="num">151,216,360</td><td class="num">144.2 MB</td><td>2026-06-16T04:44:44</td><td><code>1#2026-06-16T04:44Z#36277d50-81cc-489d-99c0-c4afe57cd801-page-1-102-eventfilter.json</code></td></tr>
+    <tr><td class="num">129,036,808</td><td class="num">123.1 MB</td><td>2026-06-16T04:44:38</td><td><code>1#2026-06-16T04:44Z#aeec53a6-ffd3-43a7-be20-a078b4a939ad-page-1-352-eventfilter.json</code></td></tr>
+    <tr><td class="num">124,242,175</td><td class="num">118.5 MB</td><td>2026-06-16T06:59:49</td><td><code>1#2026-06-16T06:59Z#5fbb4d84-85b5-4db2-90ff-abafb6bc13a7-page-1-358-eventfilter.json</code></td></tr>
+    <tr><td class="num">101,658,197</td><td class="num">96.9 MB</td><td>2026-06-16T06:59:47</td><td><code>1#2026-06-16T06:59Z#28ad0d34-8a25-451a-84d6-6ccd09ae652c-page-1-432-eventfilter.json</code></td></tr>
+    <tr><td class="num">81,262,711</td><td class="num">77.5 MB</td><td>2026-06-16T07:05:09</td><td><code>1#2026-06-16T07:04Z#78e1f6dd-01a6-4cb7-b947-54d9e2893b10-page-1-118-eventfilter.json</code></td></tr>
+    <tr><td class="num">67,657,804</td><td class="num">64.5 MB</td><td>2026-06-16T06:54:29</td><td><code>1#2026-06-16T06:54Z#1d6334cf-66cd-4962-ae0d-de35d32627f0-page-1-181-eventfilter.json</code></td></tr>
+    <tr><td class="num">64,608,400</td><td class="num">61.6 MB</td><td>2026-06-16T07:04:47</td><td><code>1#2026-06-16T07:04Z#a02c0cdc-d10b-4735-9d3a-ba694adc1390-page-1-667-eventfilter.json</code></td></tr>
+    <tr><td class="num">63,064,247</td><td class="num">60.1 MB</td><td>2026-06-16T06:49:59</td><td><code>1#2026-06-16T06:49Z#74661ede-2749-4a47-8b27-edbca8cf83a9-page-1-375-eventfilter.json</code></td></tr>
+    <tr><td class="num">59,375,093</td><td class="num">56.6 MB</td><td>2026-06-16T06:49:41</td><td><code>1#2026-06-16T06:49Z#3a27e30d-1e4b-4583-8547-5579f2134558-page-1-128-eventfilter.json</code></td></tr>
+    <tr><td class="num">55,228,530</td><td class="num">52.7 MB</td><td>2026-06-16T06:54:25</td><td><code>1#2026-06-16T06:54Z#93990420-4db0-4d86-a6ef-a86e6151a496-page-1-598-eventfilter.json</code></td></tr>
+    <tr><td class="num">46,133,635</td><td class="num">44.0 MB</td><td>2026-06-16T04:44:37</td><td><code>1#2026-06-16T04:44Z#60acbcf5-7d6c-484b-a771-4f816878e208-page-1-356-eventfilter.json</code></td></tr>
+    <tr><td class="num">45,170,821</td><td class="num">43.1 MB</td><td>2026-06-16T05:54:50</td><td><code>1#2026-06-16T05:54Z#bad6e47f-fde2-499b-b093-32534f3b064e-page-1-933-eventfilter.json</code></td></tr>
+    <tr><td class="num">45,115,499</td><td class="num">43.0 MB</td><td>2026-06-16T06:14:50</td><td><code>1#2026-06-16T06:14Z#9d858b97-9f00-4eef-ba03-e4695fa4fe7b-page-1-410-eventfilter.json</code></td></tr>
+    <tr><td class="num">45,113,475</td><td class="num">43.0 MB</td><td>2026-06-16T05:35:26</td><td><code>1#2026-06-16T05:34Z#40f59546-33fd-494a-b31c-32884d7dc100-page-1-474-eventfilter.json</code></td></tr>
+    <tr><td class="num">43,415,311</td><td class="num">41.4 MB</td><td>2026-06-16T04:44:24</td><td><code>1#2026-06-16T04:44Z#16d01515-3343-46d7-8f81-ba19c3c9a80b-page-1-205-eventfilter.json</code></td></tr>
+    <tr><td class="num">38,335,081</td><td class="num">36.6 MB</td><td>2026-06-16T04:49:37</td><td><code>1#2026-06-16T04:49Z#fdad131d-2751-40ba-8b7a-8e047028cbe2-page-1-488-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,969,186</td><td class="num">35.3 MB</td><td>2026-06-16T05:14:39</td><td><code>1#2026-06-16T05:14Z#de390c2c-0225-4e12-bcae-d6272f118b50-page-1-253-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,950,194</td><td class="num">35.2 MB</td><td>2026-06-16T05:54:46</td><td><code>1#2026-06-16T05:54Z#67591c07-03aa-40fe-945d-5f61375de0eb-page-1-468-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,839,550</td><td class="num">35.1 MB</td><td>2026-06-16T06:14:45</td><td><code>1#2026-06-16T06:14Z#4dca15df-5747-4b79-a416-6c60f398c462-page-1-493-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,835,502</td><td class="num">35.1 MB</td><td>2026-06-16T05:35:25</td><td><code>1#2026-06-16T05:34Z#79c7f7d2-1f6d-4689-9346-2a81bdbe497c-page-1-721-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,804,306</td><td class="num">35.1 MB</td><td>2026-06-16T04:49:39</td><td><code>1#2026-06-16T04:49Z#8104c8a5-5a10-4c86-a851-38ff64042682-page-1-415-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,383,943</td><td class="num">34.7 MB</td><td>2026-06-16T06:59:42</td><td><code>1#2026-06-16T06:59Z#1fffd846-d970-4594-bb93-440039b9852b-page-1-623-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,279,174</td><td class="num">34.6 MB</td><td>2026-06-16T06:59:29</td><td><code>1#2026-06-16T06:59Z#f7399dd5-08b4-4219-a863-0e71d89384c4-page-1-670-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,141,918</td><td class="num">34.5 MB</td><td>2026-06-16T05:14:57</td><td><code>1#2026-06-16T05:14Z#75011199-cc7e-4893-87d1-b0663240ee74-page-1-134-eventfilter.json</code></td></tr>
+    <tr><td class="num">36,067,930</td><td class="num">34.4 MB</td><td>2026-06-16T05:29:47</td><td><code>1#2026-06-16T05:29Z#001fabd2-6ea7-4d6a-a4b6-c364c8536d4a-page-1-826-eventfilter.json</code></td></tr>
+    <tr><td class="num">33,899,303</td><td class="num">32.3 MB</td><td>2026-06-16T06:19:31</td><td><code>1#2026-06-16T06:19Z#61aa39e6-550c-4391-a45b-bd99309d0fac-page-1-178-eventfilter.json</code></td></tr>
+    <tr><td class="num">33,807,640</td><td class="num">32.2 MB</td><td>2026-06-16T04:39:52</td><td><code>1#2026-06-16T04:39Z#4c87fdd1-5142-4f53-bd30-0f8f41e16b30-page-1-755-eventfilter.json</code></td></tr>
+  </table>
+
+  <p class="legend">Raw (copy-paste — <code>bytes&nbsp;&lt;tab&gt;&nbsp;MB&nbsp;&lt;tab&gt;&nbsp;lastModified&nbsp;&lt;tab&gt;&nbsp;key</code>):</p>
+  <pre>524527728	500.2	2026-06-17T00:21:31	1#2026-06-11T05:07Z#23fa0764-205c-4b78-924d-747e8e50d5a9-page-1-574-eventfilter.json
+214819375	204.9	2026-06-16T06:50:07	1#2026-06-16T06:49Z#575c0b18-2070-41b4-a1e4-923c3c1f77d5-page-1-957-eventfilter.json
+176030077	167.9	2026-06-16T06:50:12	1#2026-06-16T06:49Z#15e001e5-73f3-4fc5-b356-f3150d0ef2d6-page-1-324-eventfilter.json
+151216360	144.2	2026-06-16T04:44:44	1#2026-06-16T04:44Z#36277d50-81cc-489d-99c0-c4afe57cd801-page-1-102-eventfilter.json
+129036808	123.1	2026-06-16T04:44:38	1#2026-06-16T04:44Z#aeec53a6-ffd3-43a7-be20-a078b4a939ad-page-1-352-eventfilter.json
+124242175	118.5	2026-06-16T06:59:49	1#2026-06-16T06:59Z#5fbb4d84-85b5-4db2-90ff-abafb6bc13a7-page-1-358-eventfilter.json
+101658197	96.9	2026-06-16T06:59:47	1#2026-06-16T06:59Z#28ad0d34-8a25-451a-84d6-6ccd09ae652c-page-1-432-eventfilter.json
+81262711	77.5	2026-06-16T07:05:09	1#2026-06-16T07:04Z#78e1f6dd-01a6-4cb7-b947-54d9e2893b10-page-1-118-eventfilter.json
+67657804	64.5	2026-06-16T06:54:29	1#2026-06-16T06:54Z#1d6334cf-66cd-4962-ae0d-de35d32627f0-page-1-181-eventfilter.json
+64608400	61.6	2026-06-16T07:04:47	1#2026-06-16T07:04Z#a02c0cdc-d10b-4735-9d3a-ba694adc1390-page-1-667-eventfilter.json
+63064247	60.1	2026-06-16T06:49:59	1#2026-06-16T06:49Z#74661ede-2749-4a47-8b27-edbca8cf83a9-page-1-375-eventfilter.json
+59375093	56.6	2026-06-16T06:49:41	1#2026-06-16T06:49Z#3a27e30d-1e4b-4583-8547-5579f2134558-page-1-128-eventfilter.json
+55228530	52.7	2026-06-16T06:54:25	1#2026-06-16T06:54Z#93990420-4db0-4d86-a6ef-a86e6151a496-page-1-598-eventfilter.json
+46133635	44.0	2026-06-16T04:44:37	1#2026-06-16T04:44Z#60acbcf5-7d6c-484b-a771-4f816878e208-page-1-356-eventfilter.json
+45170821	43.1	2026-06-16T05:54:50	1#2026-06-16T05:54Z#bad6e47f-fde2-499b-b093-32534f3b064e-page-1-933-eventfilter.json
+45115499	43.0	2026-06-16T06:14:50	1#2026-06-16T06:14Z#9d858b97-9f00-4eef-ba03-e4695fa4fe7b-page-1-410-eventfilter.json
+45113475	43.0	2026-06-16T05:35:26	1#2026-06-16T05:34Z#40f59546-33fd-494a-b31c-32884d7dc100-page-1-474-eventfilter.json
+43415311	41.4	2026-06-16T04:44:24	1#2026-06-16T04:44Z#16d01515-3343-46d7-8f81-ba19c3c9a80b-page-1-205-eventfilter.json
+38335081	36.6	2026-06-16T04:49:37	1#2026-06-16T04:49Z#fdad131d-2751-40ba-8b7a-8e047028cbe2-page-1-488-eventfilter.json
+36969186	35.3	2026-06-16T05:14:39	1#2026-06-16T05:14Z#de390c2c-0225-4e12-bcae-d6272f118b50-page-1-253-eventfilter.json
+36950194	35.2	2026-06-16T05:54:46	1#2026-06-16T05:54Z#67591c07-03aa-40fe-945d-5f61375de0eb-page-1-468-eventfilter.json
+36839550	35.1	2026-06-16T06:14:45	1#2026-06-16T06:14Z#4dca15df-5747-4b79-a416-6c60f398c462-page-1-493-eventfilter.json
+36835502	35.1	2026-06-16T05:35:25	1#2026-06-16T05:34Z#79c7f7d2-1f6d-4689-9346-2a81bdbe497c-page-1-721-eventfilter.json
+36804306	35.1	2026-06-16T04:49:39	1#2026-06-16T04:49Z#8104c8a5-5a10-4c86-a851-38ff64042682-page-1-415-eventfilter.json
+36383943	34.7	2026-06-16T06:59:42	1#2026-06-16T06:59Z#1fffd846-d970-4594-bb93-440039b9852b-page-1-623-eventfilter.json
+36279174	34.6	2026-06-16T06:59:29	1#2026-06-16T06:59Z#f7399dd5-08b4-4219-a863-0e71d89384c4-page-1-670-eventfilter.json
+36141918	34.5	2026-06-16T05:14:57	1#2026-06-16T05:14Z#75011199-cc7e-4893-87d1-b0663240ee74-page-1-134-eventfilter.json
+36067930	34.4	2026-06-16T05:29:47	1#2026-06-16T05:29Z#001fabd2-6ea7-4d6a-a4b6-c364c8536d4a-page-1-826-eventfilter.json
+33899303	32.3	2026-06-16T06:19:31	1#2026-06-16T06:19Z#61aa39e6-550c-4391-a45b-bd99309d0fac-page-1-178-eventfilter.json
+33807640	32.2	2026-06-16T04:39:52	1#2026-06-16T04:39Z#4c87fdd1-5142-4f53-bd30-0f8f41e16b30-page-1-755-eventfilter.json</pre>
+
+  <footer>
+    Prepared during an interactive investigation. Key code references: <code>app/src/lib/common/Converter.ts:11</code> (<code>bodyToString</code>),
+    <code>app/src/lib/objectstorage/manager/impl/BlobStorageManager.ts:271</code> (<code>getObjectCore</code>),
+    <code>app/src/lib/engine/trace/handler/BaseTraceEventHandler.ts:99</code> (<code>retrieveFromBlobStorage</code>).
+    Evidence: live <code>process.memoryUsage()</code> trace + <code>az storage blob list</code> on <code>gallup-az-eu-stage-0-poller-data</code>.
+  </footer>
+
+</div>
+</body>
+</html>
