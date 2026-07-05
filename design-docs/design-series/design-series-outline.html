@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Poller Tolerance: Lookback and Deduplication</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --violet:#7c3aed; --violet-bg:#f5f3ff;
+    --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:1000px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:29px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 22px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:16px; color:var(--blue-d); margin:20px 0 6px;}
+  p{margin:8px 0;}
+  a{color:#1d4ed8;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.5; white-space:pre;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;}
+  blockquote{margin:12px 0; padding:10px 16px; border-left:4px solid #94a3b8; background:#f1f5f9;
+      color:#334155; border-radius:0 8px 8px 0;}
+  .callout{border-radius:10px; padding:13px 16px; margin:14px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .c-violet{background:var(--violet-bg); border-color:#ddd6fe;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);} .c-violet .t{color:var(--violet);}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:top;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  .rec{background:#f0fdf4;}
+  .pill{display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; vertical-align:middle;}
+  .pill-green{background:#d1fae5; color:var(--green);} .pill-blue{background:#dbeafe; color:#1e40af;}
+  .pill-violet{background:#ede9fe; color:var(--violet);} .pill-gray{background:#e5e7eb; color:#374151;}
+  .pill-amber{background:#fef3c7; color:var(--amber);} .pill-red{background:#fee2e2; color:var(--red);}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+  ul{margin:8px 0;} li{margin:3px 0;}
+  .sec{border:1px solid var(--line); border-radius:12px; padding:6px 20px 16px; margin:18px 0; background:#fff;}
+  .sechdr{display:flex; align-items:baseline; gap:10px; border-bottom:1px solid var(--line); margin:0 -20px 10px; padding:12px 20px 10px;}
+  .secno{font-size:13px; font-weight:800; color:#fff; background:#1e40af; border-radius:6px; padding:2px 9px;}
+  .secttl{font-size:18px; font-weight:700; color:var(--blue-d);}
+  .summary{font-style:italic; color:#334155; margin:6px 0 8px;}
+  .lbl{font-size:11px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:#64748b;}
+  .src{font-size:12.5px; color:var(--muted); margin-top:8px;}
+  .toc{columns:2; column-gap:34px; font-size:13.5px; margin:10px 0 4px;}
+  .toc a{display:block; margin:3px 0;}
+  .fig{border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;background:#fff;margin:16px 0;}
+  .figcap{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;margin-bottom:8px;}
+  .anim-ctrl{display:flex; gap:6px; justify-content:flex-end; margin:2px 0 0;}
+  .anim-ctrl button{font-size:13px; line-height:1; color:#1e40af; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; width:28px; height:24px; padding:0; cursor:pointer;}
+  .anim-ctrl button:hover{background:#dbeafe;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Poller Tolerance: Lookback and Deduplication</h1>
+  <p class="sub">Design document. Introduces a look-back window on polling triggers to prevent missed events, and a platform-level deduplication mechanism to remove the repeats that look-back necessarily produces.</p>
+
+  <div class="toc">
+    <a href="#s1">1. Problem Statement</a>
+    <a href="#s2">2. Background</a>
+    <a href="#s3">3. Proposal</a>
+    <a href="#s4">4. Contract Changes &amp; Configuration</a>
+    <a href="#s5">5. Proposed Design: Keyed Store (Redis)</a>
+    <a href="#s6">6. Design in Depth</a>
+    <a href="#s7">7. Alternate Design Options</a>
+    <a href="#s8">8. Storage Comparison</a>
+    <a href="#s9">9. Current Production Load</a>
+    <a href="#s10">10. Shared vs Dedicated Redis</a>
+    <a href="#s11">11. Decisions</a>
+    <a href="#s12">12. Open Questions</a>
+    <a href="#s13">13. Reference Documents</a>
+  </div>
+
+  <!-- 1 -->
+  <div class="sec" id="s1">
+    <div class="sechdr"><span class="secno">1</span><span class="secttl">Problem Statement</span></div>
+
+    <p><b>Problem.</b> Polling triggers can miss events when a vendor reflects a record only after the poll watermark has advanced past its timestamp. The lag between an event occurring and the record becoming queryable has several causes:</p>
+    <ul>
+      <li><b>Processing delay.</b> The vendor accepts the write but takes time to process it before it is returned by the query API.</li>
+      <li><b>Replication delay.</b> The record is written to a primary store and replicated asynchronously to the read replica the query API serves.</li>
+      <li><b>Indexing latency.</b> The record exists but is not yet present in the search or query index the poll filters against.</li>
+      <li><b>Non-monotonic timestamps.</b> Under load the timestamp the poll orders by (for example <code>receivedDateTime</code>) is not strictly increasing, so a later-visible record can carry an earlier timestamp.</li>
+    </ul>
+
+    <h3>Examples</h3>
+    <p class="summary">The problem is observed in production across connectors, as both missed events (which look-back addresses) and duplicate events (which deduplication addresses).</p>
+    <ul>
+      <li><b>Outlook missed events.</b> Tracked in <a href="https://uipath.atlassian.net/browse/SRE-589826">SRE-589826</a>.</li>
+      <li><b>Salesforce "Account created" misses.</b> A couple per week on our reliability dashboard.</li>
+      <li><b>Jira duplicate tickets.</b> Reported in <a href="https://uipath-product.slack.com/archives/C066EDZ2MK9/p1776930970825029">this thread</a>. Here look-back is not the fix; deduplication is, because the duplicates arise from timestamps that lack sub-second precision.</li>
+      <li><b>Box connector duplicate events.</b> Tracked in <a href="https://uipath.atlassian.net/browse/ENGCE-56454">ENGCE-56454</a>.</li>
+      <li><b>Controlled Outlook load test.</b> 250 emails sent produced 271 emitted (0 missing, 21 duplicated), reproducing both failure modes.</li>
+    </ul>
+  </div>
+
+  <!-- 2 -->
+  <div class="sec" id="s2">
+    <div class="sechdr"><span class="secno">2</span><span class="secttl">Background</span></div>
+    <p class="summary">Two pieces of prior art frame the design: the watermark model that governs how the poll cursor advances, and today's connector-level deduplication, which the proposal replaces with a platform mechanism.</p>
+    <ul>
+      <li><b>Watermark model</b> (<code>useLastPollDate</code>). Data-driven (default) advances to the maximum record date observed; clock-driven advances to the poll clock (<code>lastPollDate</code>). Outlook runs clock-driven. This is the cursor the look-back window trails.</li>
+      <li><b>Connector-level deduplication today.</b> Each connector performs its own deduplication in a post-hook, keyed and pruned per connector, with its own limitations. The proposal lifts this to the platform.</li>
+    </ul>
+    <div class="callout c-violet">
+      <span class="t">Reference: how Outlook deduplication works today and its limitations</span>
+      <a href="outlook-dedup.html">outlook-dedup.html</a> covers the storage, the 24-hour prune (with early-break and a 5,000-record cap), and why a per-connector approach does not generalize or scale. This is the current behavior that Section 3 proposes to replace.
+    </div>
+    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="uselastpolldate.html">uselastpolldate.html</a> (watermark model); <a href="outlook-dedup.html">outlook-dedup.html</a> (current deduplication).</p>
+  </div>
+
+  <!-- 3 -->
+  <div class="sec" id="s3">
+    <div class="sechdr"><span class="secno">3</span><span class="secttl">Proposal</span></div>
+    <p class="summary">Add a look-back window to each poll so late-reflected records are captured, and move deduplication to the platform so the resulting re-emits are removed once, consistently, across all connectors.</p>
+    <ul>
+      <li><b>Look-back during polling.</b> Each poll queries from <code>watermark - lookBackTime</code> rather than strictly after the watermark, re-scanning a short trailing window so late-visible or out-of-order records are captured. It applies to both the query and the in-engine date filter. Outlook is the exception, where <code>filterByUpdatedDate</code> is false.</li>
+      <li><b>Platform-level deduplication.</b> Because look-back re-emits, the platform deduplicates centrally, keyed by connector-declared reference fields per event type. This replaces per-connector hooks with a single mechanism, one key strategy, and one retention policy.</li>
+      <li><b>Rationale for platform over connector.</b> Consistent behavior across connectors, a debuggable key, and a single place to reason about scale and retention, rather than many bespoke implementations with the limitations noted in Section 2.</li>
+    </ul>
+
+    <p class="small">The four steps below tell the story in order. Each animates when this page is opened in a browser; use the small controls on each step to pause, resume, or restart it. A static image or export shows one frame, so each step also states its conclusion beneath the diagram.</p>
+
+    <div class="fig">
+      <div class="figcap">Step 1 of 4: the problem (sync delay)</div>
+      <div class="anim-ctrl">
+        <button type="button" data-anim="toggle" title="Play or pause" aria-label="Pause">⏸</button>
+        <button type="button" data-anim="restart" title="Restart" aria-label="Restart">↻</button>
+      </div>
+      <svg class="story" viewBox="0 0 900 200" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <line x1="80" y1="140" x2="820" y2="140" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="150" y1="135" x2="150" y2="145" stroke="#94a3b8"/><text x="150" y="160" font-size="10.5" fill="#64748b" text-anchor="middle">10:00</text>
+        <line x1="380" y1="135" x2="380" y2="145" stroke="#94a3b8"/><text x="380" y="160" font-size="10.5" fill="#64748b" text-anchor="middle">10:01</text>
+        <line x1="610" y1="135" x2="610" y2="145" stroke="#94a3b8"/><text x="610" y="160" font-size="10.5" fill="#64748b" text-anchor="middle">10:02</text>
+        <circle cx="265" cy="140" r="6" fill="#1e40af"><animate attributeName="opacity" values="0.12;0.12;1;1;1" keyTimes="0;0.42;0.5;1;1" dur="8s" repeatCount="indefinite"/></circle>
+        <text x="265" y="178" font-size="10.5" fill="#1e3a5f" text-anchor="middle" font-weight="700">record · ts 10:00:30</text>
+        <text x="265" y="192" font-size="10" fill="#b45309" text-anchor="middle">becomes visible only at 10:01:30 (sync delay)<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.45;0.55;1" dur="8s" repeatCount="indefinite"/></text>
+        <g transform="translate(150,0)">
+          <line x1="0" y1="84" x2="0" y2="140" stroke="#b91c1c" stroke-width="1.6" stroke-dasharray="5 3"/>
+          <text x="0" y="78" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="700">watermark (query: field &gt; it)</text>
+          <animateTransform attributeName="transform" type="translate" values="150,0;150,0;380,0;380,0" keyTimes="0;0.15;0.42;1" dur="8s" repeatCount="indefinite"/>
+        </g>
+        <text x="265" y="122" font-size="11" fill="#b91c1c" text-anchor="middle" font-weight="700" opacity="0">behind watermark, MISSED<animate attributeName="opacity" values="0;0;0;1;1" keyTimes="0;0.62;0.66;0.76;1" dur="8s" repeatCount="indefinite"/></text>
+      </svg>
+      <p class="small"><b>Problem:</b> the watermark is the query's lower bound, so each poll asks <code>field &gt; watermark</code>. Poll A advances it past the record's timestamp (to 10:01) <i>while the record is still invisible</i>, so Poll B's <code>field &gt; 10:01</code> never returns the record (its field value is 10:00:30). The record is skipped permanently.</p>
+    </div>
+
+    <div class="fig">
+      <div class="figcap">Step 2 of 4: the proposal (look-back)</div>
+      <div class="anim-ctrl">
+        <button type="button" data-anim="toggle" title="Play or pause" aria-label="Pause">⏸</button>
+        <button type="button" data-anim="restart" title="Restart" aria-label="Restart">↻</button>
+      </div>
+      <svg class="story" viewBox="0 0 900 200" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <line x1="80" y1="140" x2="820" y2="140" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="150" y1="135" x2="150" y2="145" stroke="#94a3b8"/><text x="150" y="160" font-size="10.5" fill="#64748b" text-anchor="middle">10:00</text>
+        <line x1="380" y1="135" x2="380" y2="145" stroke="#94a3b8"/><text x="380" y="160" font-size="10.5" fill="#64748b" text-anchor="middle">10:01</text>
+        <line x1="610" y1="135" x2="610" y2="145" stroke="#94a3b8"/><text x="610" y="160" font-size="10.5" fill="#64748b" text-anchor="middle">10:02</text>
+        <rect x="610" y="98" width="0" height="42" fill="#a7f3d0" opacity="0.55"><animate attributeName="x" values="610;610;200;200" keyTimes="0;0.25;0.6;1" dur="8s" repeatCount="indefinite"/><animate attributeName="width" values="0;0;410;410" keyTimes="0;0.25;0.6;1" dur="8s" repeatCount="indefinite"/></rect>
+        <line x1="610" y1="84" x2="610" y2="140" stroke="#047857" stroke-width="1.6" stroke-dasharray="5 3"/>
+        <text x="610" y="78" font-size="10.5" fill="#047857" text-anchor="middle" font-weight="700">watermark (Poll B)</text>
+        <circle cx="265" cy="140" r="6" fill="#1e40af"/>
+        <text x="265" y="178" font-size="10.5" fill="#1e3a5f" text-anchor="middle" font-weight="700">record · ts 10:00:30</text>
+        <circle cx="265" cy="140" r="11" fill="none" stroke="#047857" stroke-width="2" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.55;0.62;1" dur="8s" repeatCount="indefinite"/></circle>
+        <text x="265" y="122" font-size="11" fill="#047857" text-anchor="middle" font-weight="700" opacity="0">captured, emitted<animate attributeName="opacity" values="0;0;0;1;1" keyTimes="0;0.6;0.64;0.72;1" dur="8s" repeatCount="indefinite"/></text>
+        <text x="405" y="192" font-size="10" fill="#047857" text-anchor="middle" opacity="0">look-back window: query from (watermark − lookBack)<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.35;0.5;1" dur="8s" repeatCount="indefinite"/></text>
+      </svg>
+      <p class="small"><b>Proposal:</b> each poll re-scans a short trailing window (from watermark minus look-back), so the late record is captured instead of skipped.</p>
+    </div>
+
+    <div class="fig">
+      <div class="figcap">Step 3 of 4: look-back without deduplication</div>
+      <div class="anim-ctrl">
+        <button type="button" data-anim="toggle" title="Play or pause" aria-label="Pause">⏸</button>
+        <button type="button" data-anim="restart" title="Restart" aria-label="Restart">↻</button>
+      </div>
+      <svg class="story" viewBox="0 0 900 205" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs>
+          <marker id="s3g" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#047857"/></marker>
+          <marker id="s3r" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b91c1c"/></marker>
+        </defs>
+        <line x1="80" y1="145" x2="820" y2="145" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="150" y1="140" x2="150" y2="150" stroke="#94a3b8"/><text x="150" y="165" font-size="10.5" fill="#64748b" text-anchor="middle">10:00</text>
+        <line x1="380" y1="140" x2="380" y2="150" stroke="#94a3b8"/><text x="380" y="165" font-size="10.5" fill="#64748b" text-anchor="middle">10:01</text>
+        <line x1="610" y1="140" x2="610" y2="150" stroke="#94a3b8"/><text x="610" y="165" font-size="10.5" fill="#64748b" text-anchor="middle">10:02</text>
+        <rect x="610" y="123" width="0" height="22" fill="#fee2e2" opacity="0.6"><animate attributeName="x" values="610;610;200;200" keyTimes="0;0.42;0.7;1" dur="8s" repeatCount="indefinite"/><animate attributeName="width" values="0;0;410;410" keyTimes="0;0.42;0.7;1" dur="8s" repeatCount="indefinite"/></rect>
+        <circle cx="265" cy="145" r="6" fill="#1e40af"/>
+        <text x="265" y="183" font-size="10.5" fill="#1e3a5f" text-anchor="middle" font-weight="700">record · ts 10:00:30</text>
+        <g opacity="0"><animate attributeName="opacity" values="0;1;1;1;1" keyTimes="0;0.16;0.2;1;1" dur="8s" repeatCount="indefinite"/>
+          <line x1="258" y1="139" x2="258" y2="108" stroke="#047857" stroke-width="1.8" marker-end="url(#s3g)"/>
+          <text x="196" y="104" font-size="10.5" fill="#047857" text-anchor="middle" font-weight="700">emit #1 (Poll A)</text>
+        </g>
+        <g opacity="0"><animate attributeName="opacity" values="0;0;0;1;1" keyTimes="0;0.72;0.76;0.82;1" dur="8s" repeatCount="indefinite"/>
+          <line x1="272" y1="139" x2="272" y2="108" stroke="#b91c1c" stroke-width="1.8" marker-end="url(#s3r)"/>
+          <text x="360" y="104" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="700">emit #2 (Poll B), DUPLICATE</text>
+        </g>
+        <text x="720" y="150" font-size="10.5" fill="#94a3b8" text-anchor="middle">no deduplication</text>
+      </svg>
+      <p class="small"><b>Look-back alone:</b> the re-scan re-emits a record already sent on the previous poll, so it goes out a second time as a duplicate.</p>
+    </div>
+
+    <div class="fig">
+      <div class="figcap">Step 4 of 4: look-back with deduplication</div>
+      <div class="anim-ctrl">
+        <button type="button" data-anim="toggle" title="Play or pause" aria-label="Pause">⏸</button>
+        <button type="button" data-anim="restart" title="Restart" aria-label="Restart">↻</button>
+      </div>
+      <svg class="story" viewBox="0 0 900 224" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs>
+          <marker id="s4g" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#047857"/></marker>
+        </defs>
+        <rect x="600" y="10" width="285" height="58" rx="9" fill="#1e293b" stroke="#0f172a"/>
+        <text x="742" y="32" text-anchor="middle" font-size="11" fill="#ffffff" font-weight="700">deduplication store</text>
+        <text x="742" y="52" text-anchor="middle" font-size="10" font-family="monospace" fill="#22c55e" opacity="0">key …:id_10:00:30  recorded<animate attributeName="opacity" values="0;0;1;1;1" keyTimes="0;0.24;0.3;1;1" dur="8s" repeatCount="indefinite"/></text>
+        <line x1="80" y1="155" x2="560" y2="155" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="150" y1="150" x2="150" y2="160" stroke="#94a3b8"/><text x="150" y="175" font-size="10.5" fill="#64748b" text-anchor="middle">10:00</text>
+        <line x1="330" y1="150" x2="330" y2="160" stroke="#94a3b8"/><text x="330" y="175" font-size="10.5" fill="#64748b" text-anchor="middle">10:01</text>
+        <line x1="510" y1="150" x2="510" y2="160" stroke="#94a3b8"/><text x="510" y="175" font-size="10.5" fill="#64748b" text-anchor="middle">10:02</text>
+        <rect x="510" y="138" width="0" height="22" fill="#a7f3d0" opacity="0.5"><animate attributeName="x" values="510;510;200;200" keyTimes="0;0.42;0.7;1" dur="8s" repeatCount="indefinite"/><animate attributeName="width" values="0;0;310;310" keyTimes="0;0.42;0.7;1" dur="8s" repeatCount="indefinite"/></rect>
+        <circle cx="235" cy="155" r="6" fill="#1e40af"><animate attributeName="opacity" values="1;1;1;1;0.3;0.3" keyTimes="0;0.7;0.74;0.78;0.84;1" dur="8s" repeatCount="indefinite"/></circle>
+        <text x="235" y="190" font-size="10.5" fill="#1e3a5f" text-anchor="middle" font-weight="700">record · ts 10:00:30</text>
+        <g opacity="0"><animate attributeName="opacity" values="0;1;1;1;1" keyTimes="0;0.16;0.2;1;1" dur="8s" repeatCount="indefinite"/>
+          <text x="188" y="128" font-size="10.5" fill="#047857" text-anchor="middle" font-weight="700">emit #1 (Poll A)</text>
+          <path d="M250,151 C 400,120 470,80 598,48" fill="none" stroke="#047857" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#s4g)"/>
+          <text x="450" y="104" font-size="10" fill="#047857" text-anchor="middle">record key</text>
+        </g>
+        <text x="235" y="210" font-size="11" fill="#047857" text-anchor="middle" font-weight="700" opacity="0">already in store, dropped<animate attributeName="opacity" values="0;0;0;1;1" keyTimes="0;0.74;0.78;0.84;1" dur="8s" repeatCount="indefinite"/></text>
+      </svg>
+      <p class="small"><b>Look-back with deduplication:</b> the re-scanned record's key is found in the store, so it is dropped and no duplicate is emitted.</p>
+    </div>
+  </div>
+
+  <!-- 4 -->
+  <div class="sec" id="s4">
+    <div class="sechdr"><span class="secno">4</span><span class="secttl">Contract Changes &amp; Configuration</span></div>
+    <p class="summary">Three per-object fields on the poller configuration carry the feature. There is no separate on/off flag beyond the presence of these fields and the tenant feature flag.</p>
+    <table>
+      <thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>lookBackTime</code></td><td>int seconds</td><td><b>0</b> is off, <b>&gt;0</b> is the trailing window in seconds. Gallup reads this field.</td></tr>
+        <tr><td><code>dedupReferenceFields</code></td><td>map <code>eventType &rarr; {fields:[]}</code></td><td>Which fields identify a unique event, per event type, with a <code>DEFAULT</code> fallback. The key is the values concatenated with <code>_</code>, kept human-readable rather than hashed. Presence enables deduplication; there is no separate <code>enableDedup</code> flag.</td></tr>
+        <tr><td><code>useHydrationBeforeDedup</code></td><td>bool</td><td>New. When <b>true</b>, hydration runs before deduplication (needed only when the dedup key depends on hydrated fields). Default is <b>false</b> (absent on the wire resolves to false), which runs dedup before hydrate. Governs the phase ordering, per Section 6.</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li>The fields sit on the standard resource-object poller configuration and flow from connector to CS to udon to gallup, mirroring CS column types for parity.</li>
+      <li>Retention stores a value of <code>{insertedAt}</code> per key. The retention window is bounded by look-back; or we can keep a fixed one.</li>
+    </ul>
+    <p class="src"><span class="lbl">Reference</span> &nbsp;A concrete connector example is the Outlook <a href="https://github.com/cloud-elements/periodic-uipath-microsoft-outlook365/blob/ba51d23d9de6555d24b3477e058e9ca627291cde/app/element/standard-resources/Message.json#L53"><code>Message.json</code> standard resource</a> (where the poller configuration for these fields lives). Confluence contract sub-page (<a href="https://uipath.atlassian.net/wiki/x/14DFIxU">/x/14DFIxU</a>); <code>useHydrationBeforeDedup</code> is detailed in <a href="dedup-unbatch-two-phase-design.html">dedup-unbatch-two-phase-design.html</a>.</p>
+
+    <div class="fig">
+      <div class="figcap">How the configuration flows and where Gallup stores it (the Object.pollingConfig column)</div>
+      <svg viewBox="0 0 900 424" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs>
+          <marker id="cfe" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker>
+          <marker id="cfr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto-start-reverse"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker>
+        </defs>
+        <text x="30" y="24" font-size="11" font-weight="700" letter-spacing="0.04em" fill="#64748b">CONFIGURATION FLOW (AT TRIGGER CREATION)</text>
+        <rect x="30" y="40" width="130" height="52" rx="9" fill="#eff6ff" stroke="#1e40af"/>
+        <text x="95" y="63" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a5f">CS</text>
+        <text x="95" y="80" text-anchor="middle" font-size="9.5" fill="#334155">starts trigger creation</text>
+        <rect x="210" y="40" width="120" height="52" rx="9" fill="#f1f5f9" stroke="#64748b"/>
+        <text x="270" y="70" text-anchor="middle" font-size="12" font-weight="700" fill="#334155">udon</text>
+        <rect x="380" y="40" width="210" height="52" rx="9" fill="#eff6ff" stroke="#1e40af"/>
+        <text x="485" y="62" text-anchor="middle" font-size="12" font-weight="700" fill="#1e3a5f">Gallup</text>
+        <text x="485" y="80" text-anchor="middle" font-size="9.5" fill="#334155">persists poller config</text>
+        <g stroke="#475569" stroke-width="1.4" marker-end="url(#cfe)">
+          <line x1="160" y1="66" x2="208" y2="66"/><line x1="330" y1="66" x2="378" y2="66"/>
+        </g>
+        <rect x="200" y="118" width="250" height="70" rx="9" fill="#eff6ff" stroke="#1e40af"/>
+        <text x="325" y="136" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e3a5f">Periodic</text>
+        <text x="325" y="151" text-anchor="middle" font-size="9" fill="#334155">connector metadata (Message.json):</text>
+        <text x="325" y="164" text-anchor="middle" font-size="9" fill="#334155">lookBackTime · dedupReferenceFields</text>
+        <text x="325" y="177" text-anchor="middle" font-size="9" fill="#334155">useHydrationBeforeDedup</text>
+        <line x1="270" y1="92" x2="270" y2="116" stroke="#475569" stroke-width="1.4" marker-start="url(#cfr)" marker-end="url(#cfe)"/>
+        <text x="360" y="107" font-size="9.5" fill="#475569">udon gets metadata</text>
+
+        <line x1="485" y1="92" x2="485" y2="214" stroke="#475569" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#cfe)"/>
+        <text x="497" y="150" font-size="9.5" fill="#475569">persist</text>
+        <text x="30" y="234" font-size="11" font-weight="700" letter-spacing="0.04em" fill="#64748b">STORED IN GALLUP</text>
+
+        <rect x="90" y="244" width="720" height="24" rx="4" fill="#1e3a5f"/>
+        <text x="102" y="260" font-size="11" fill="#ffffff" font-family="monospace">[is_gallupx].[Object]</text>
+        <text x="800" y="260" font-size="9.5" fill="#cbd5e1" text-anchor="end">PK (connectionId, objectName)</text>
+        <rect x="90" y="268" width="720" height="42" fill="#ffffff" stroke="#cbd5e1"/>
+        <rect x="580" y="268" width="230" height="42" fill="#fffbeb" stroke="#cbd5e1"/>
+        <line x1="250" y1="268" x2="250" y2="310" stroke="#cbd5e1"/>
+        <line x1="410" y1="268" x2="410" y2="310" stroke="#cbd5e1"/>
+        <line x1="580" y1="268" x2="580" y2="310" stroke="#cbd5e1"/>
+        <text x="170" y="286" text-anchor="middle" font-size="10" font-family="monospace" fill="#334155">connectionId</text>
+        <text x="170" y="300" text-anchor="middle" font-size="8.5" fill="#94a3b8">PK, GUID</text>
+        <text x="330" y="286" text-anchor="middle" font-size="10" font-family="monospace" fill="#334155">objectName</text>
+        <text x="330" y="300" text-anchor="middle" font-size="8.5" fill="#94a3b8">PK</text>
+        <text x="495" y="286" text-anchor="middle" font-size="10" font-family="monospace" fill="#334155">hydrationConfig</text>
+        <text x="495" y="300" text-anchor="middle" font-size="8.5" fill="#94a3b8">JSON</text>
+        <text x="695" y="286" text-anchor="middle" font-size="10" font-family="monospace" fill="#92400e" font-weight="700">pollingConfig</text>
+        <text x="695" y="300" text-anchor="middle" font-size="8.5" fill="#b45309">JSON, holds these fields</text>
+        <line x1="695" y1="310" x2="695" y2="324" stroke="#b45309" stroke-width="1.4" marker-end="url(#cfe)"/>
+
+        <rect x="90" y="326" width="720" height="92" rx="6" fill="#1e293b" stroke="#0f172a"/>
+        <text x="104" y="346" font-size="10" font-family="monospace" fill="#e2e8f0">pollingConfig  (NVARCHAR(MAX) JSON):</text>
+        <text x="104" y="367" font-size="9" font-family="monospace" fill="#94a3b8">idField · pollDelay · pageSize · filterByUpdatedDate · useLastPollDate · datesConfiguration</text>
+        <text x="104" y="381" font-size="9" font-family="monospace" fill="#94a3b8">postHooks · useHydrationBeforePostHooks · url · batchSize · pollingIntervalInMinutes · …</text>
+        <text x="104" y="404" font-size="9.5" font-family="monospace" fill="#fbbf24" font-weight="700">lookBackTime · dedupReferenceFields · useHydrationBeforeDedup        (new)</text>
+      </svg>
+      <p class="small">The three fields live inside the existing <code>pollingConfig</code> JSON on the <code>is_gallupx.Object</code> table (keyed by connectionId + objectName), alongside the existing polling fields. Once stored, the poller reads them: <code>lookBackTime</code> &rarr; the query watermark and in-engine date filter; <code>dedupReferenceFields</code> &rarr; the deduplication key per event type; <code>useHydrationBeforeDedup</code> &rarr; whether hydrate runs before or after the dedup barrier (Section 6).</p>
+    </div>
+  </div>
+
+  <!-- 5 -->
+  <div class="sec" id="s5">
+    <div class="sechdr"><span class="secno">5</span><span class="secttl">Proposed Design: Keyed Store (Redis)</span></div>
+    <p class="summary">Store deduplication state in a dedicated keyed store (Redis): one key per deduplication key, with a native per-key TTL. This is the preferred design because it scales to the high-volume tail without holding a keyset in memory and, with batched access, without a round trip per event.</p>
+
+    <div class="fig">
+      <div class="figcap">Runtime, each poll: Gallup's services, and the Engine's calls to udon and the dedup store</div>
+      <svg viewBox="0 0 900 470" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs><marker id="rte" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker><marker id="rtv" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7c3aed"/></marker><marker id="rta" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b45309"/></marker></defs>
+        <rect x="20" y="10" width="13" height="13" rx="2" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="39" y="21" font-size="10.5" fill="#334155">Integration Service (Gallup, udon)</text>
+        <rect x="290" y="10" width="13" height="13" rx="2" fill="#ede9fe" stroke="#7c3aed"/>
+        <text x="309" y="21" font-size="10.5" fill="#334155">New: dedup store</text>
+        <rect x="470" y="10" width="13" height="13" rx="2" fill="#fef3c7" stroke="#b45309"/>
+        <text x="489" y="21" font-size="10.5" fill="#334155">New: look-back (query)</text>
+        <rect x="670" y="10" width="13" height="13" rx="2" fill="#e5e7eb" stroke="#64748b"/>
+        <text x="689" y="21" font-size="10.5" fill="#334155">External (Vendor API)</text>
+
+        <rect x="20" y="44" width="610" height="410" rx="12" fill="#f5f9ff" stroke="#1e40af" stroke-width="1.4" stroke-dasharray="6 4"/>
+        <text x="34" y="63" font-size="11" font-weight="700" fill="#1e40af">Integration Service</text>
+
+        <rect x="40" y="74" width="300" height="366" rx="10" fill="#eef4ff" stroke="#1e40af"/>
+        <text x="54" y="92" font-size="12" font-weight="700" fill="#1e3a5f">Gallup</text>
+        <rect x="58" y="100" width="264" height="48" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="190" y="128" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a5f">Cron Service</text>
+        <rect x="58" y="158" width="264" height="48" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="190" y="186" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a5f">Tick Service</text>
+        <rect x="58" y="216" width="264" height="58" rx="7" fill="#dbeafe" stroke="#1e40af" stroke-width="2"/><text x="190" y="238" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e3a5f">Engine Service</text><text x="190" y="256" text-anchor="middle" font-size="9" fill="#334155">Polling Engine: poll · dedup · filter</text>
+        <rect x="58" y="284" width="264" height="48" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="190" y="312" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a5f">Event Service</text>
+        <rect x="58" y="342" width="264" height="48" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="190" y="370" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a5f">Notification Service</text>
+        <g stroke="#64748b" stroke-width="1.4" marker-end="url(#rte)">
+          <line x1="190" y1="148" x2="190" y2="157"/><line x1="190" y1="206" x2="190" y2="215"/><line x1="190" y1="274" x2="190" y2="283"/><line x1="190" y1="332" x2="190" y2="341"/>
+        </g>
+
+        <rect x="390" y="196" width="110" height="50" rx="9" fill="#dbeafe" stroke="#1e40af"/>
+        <text x="445" y="218" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a5f">udon</text>
+        <text x="445" y="234" text-anchor="middle" font-size="9" fill="#334155">executor</text>
+        <rect x="390" y="286" width="170" height="64" rx="9" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.6"/>
+        <text x="475" y="308" text-anchor="middle" font-size="11" font-weight="700" fill="#7c3aed">Dedup store (Redis)</text>
+        <text x="475" y="324" text-anchor="middle" font-size="9" fill="#4c1d95">new (proposed)</text>
+        <text x="475" y="338" text-anchor="middle" font-size="9" fill="#4c1d95">batched checkAndRecord</text>
+
+        <rect x="700" y="196" width="160" height="50" rx="9" fill="#e5e7eb" stroke="#64748b"/>
+        <text x="780" y="218" text-anchor="middle" font-size="11" font-weight="700" fill="#334155">Vendor API</text>
+        <text x="780" y="234" text-anchor="middle" font-size="9" fill="#475569">external · e.g. Graph</text>
+
+        <line x1="322" y1="234" x2="388" y2="223" stroke="#475569" stroke-width="1.5" marker-end="url(#rte)"/>
+        <text x="356" y="216" text-anchor="middle" font-size="9" fill="#475569">execute / poll</text>
+        <line x1="500" y1="221" x2="698" y2="221" stroke="#b45309" stroke-width="1.6" marker-end="url(#rta)"/>
+        <text x="595" y="212" text-anchor="middle" font-size="9" fill="#b45309" font-weight="700">API call, look-back query</text>
+        <text x="560" y="238" text-anchor="middle" font-size="8.5" fill="#b45309">field &gt; watermark − lookBack</text>
+        <line x1="322" y1="258" x2="388" y2="312" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#rtv)"/>
+        <text x="352" y="300" text-anchor="middle" font-size="9" fill="#7c3aed">checkAndRecord</text>
+      </svg>
+      <p class="small">Colour key: blue = Integration Service (Gallup, udon); violet = the new dedup store (Redis), inside Integration Service; amber = the new look-back applied to the poll query; grey = the external Vendor API. The two proposed changes are both visible: <b>look-back</b> widens each poll's query to <code>field &gt; watermark − lookBack</code> (amber, on the API call), and <b>deduplication</b> removes the resulting re-emits against the store (violet, checkAndRecord). Gallup runs five services top to bottom (Cron, Tick, Engine, Event, Notification); the Engine Service does the polling. Queues and databases are omitted for clarity.</p>
+    </div>
+
+    <h3>Per-poll sequence</h3>
+    <p>The same flow as an interaction over time: one page is fetched, Phase 1 runs per event, the barrier makes a single batched Redis call, Phase 2 runs on the survivors, and Notify emits.</p>
+    <div class="fig">
+      <div class="figcap">Per-poll sequence: one batched Redis round trip at the barrier</div>
+      <svg viewBox="0 0 900 420" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs>
+          <marker id="sqe" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#1e3a5f"/></marker>
+          <marker id="sqr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#64748b"/></marker>
+        </defs>
+
+        <rect x="48" y="16" width="124" height="38" rx="7" fill="#ecfdf5" stroke="#047857"/><text x="110" y="40" text-anchor="middle" font-size="11.5" font-weight="700" fill="#065f46">Polling Engine</text>
+        <rect x="256" y="16" width="150" height="38" rx="7" fill="#f1f5f9" stroke="#64748b"/><text x="331" y="33" text-anchor="middle" font-size="11" font-weight="700" fill="#334155">udon</text><text x="331" y="47" text-anchor="middle" font-size="9" fill="#475569">calls Vendor API</text>
+        <rect x="470" y="16" width="180" height="38" rx="7" fill="#f5f3ff" stroke="#7c3aed"/><text x="560" y="40" text-anchor="middle" font-size="11.5" font-weight="700" fill="#7c3aed">Dedup store (Redis)</text>
+        <rect x="720" y="16" width="120" height="38" rx="7" fill="#eff6ff" stroke="#1e40af"/><text x="780" y="40" text-anchor="middle" font-size="11.5" font-weight="700" fill="#1e3a5f">Notify</text>
+
+        <g stroke="#cbd5e1" stroke-width="1.2" stroke-dasharray="4 4">
+          <line x1="110" y1="54" x2="110" y2="404"/><line x1="331" y1="54" x2="331" y2="404"/><line x1="560" y1="54" x2="560" y2="404"/><line x1="780" y1="54" x2="780" y2="404"/>
+        </g>
+
+        <rect x="30" y="72" width="850" height="322" rx="6" fill="none" stroke="#94a3b8" stroke-width="1"/>
+        <rect x="30" y="72" width="128" height="20" fill="#94a3b8"/><text x="42" y="87" font-size="10.5" font-weight="700" fill="#ffffff">loop [per page]</text>
+
+        <line x1="110" y1="112" x2="329" y2="112" stroke="#1e3a5f" stroke-width="1.5" marker-end="url(#sqe)"/>
+        <text x="118" y="106" font-size="10.5" fill="#1e3a5f">fetch page: query &gt; watermark − lookBack</text>
+
+        <line x1="331" y1="146" x2="112" y2="146" stroke="#64748b" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#sqr)"/>
+        <text x="120" y="140" font-size="10.5" fill="#64748b">records (≤ pageSize)</text>
+
+        <rect x="110" y="164" width="235" height="28" rx="5" fill="#f0fdf4" stroke="#a7f3d0"/>
+        <text x="120" y="182" font-size="10.5" fill="#065f46">Phase 1: postHook, hydrate (per event)</text>
+
+        <line x1="110" y1="222" x2="558" y2="222" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#sqe)"/>
+        <text x="118" y="216" font-size="10.5" fill="#7c3aed">pipeline SET key ts NX EX  (all page keys)</text>
+        <rect x="470" y="228" width="120" height="18" rx="9" fill="#ede9fe"/><text x="530" y="241" text-anchor="middle" font-size="9.5" font-weight="700" fill="#7c3aed">1 round trip</text>
+
+        <line x1="560" y1="266" x2="112" y2="266" stroke="#64748b" stroke-width="1.3" stroke-dasharray="5 3" marker-end="url(#sqr)"/>
+        <text x="120" y="260" font-size="10.5" fill="#64748b">reply per key: OK = new, nil = already seen</text>
+
+        <rect x="110" y="284" width="245" height="28" rx="5" fill="#f0fdf4" stroke="#a7f3d0"/>
+        <text x="120" y="302" font-size="10.5" fill="#065f46">Phase 2: eventFilter, halt (per survivor)</text>
+
+        <line x1="110" y1="342" x2="778" y2="342" stroke="#1e3a5f" stroke-width="1.5" marker-end="url(#sqe)"/>
+        <text x="118" y="336" font-size="10.5" fill="#1e3a5f">emit deduplicated events</text>
+      </svg>
+    </div>
+  </div>
+
+  <!-- 6 -->
+  <div class="sec" id="s6">
+    <div class="sechdr"><span class="secno">6</span><span class="secttl">Design in Depth</span></div>
+    <p class="summary">How the batched deduplication fits the Gallup polling pipeline. A naive per-event placement would cause a round trip per event; a two-phase Unbatch collapses that to one round trip per page. Illustrated with a 200-record page.</p>
+
+    <h3>Current pipeline</h3>
+    <p>A poll fetches one or more pages, and the whole step sequence runs <b>per page</b>. Most steps run once per page (over the whole batch); <code>Unbatch</code> is the exception, looping over the page's records so its inner steps run <b>per event</b>. Deduplication is <b>not</b> in this pipeline today: the dedup step present in the codebase is experimental (alpha) and off by default. A naive placement inside <code>Unbatch</code> would run once per event (a 200-record page would make 200 Redis calls), which is what the proposal restructures.</p>
+    <div class="fig">
+      <div class="figcap">Current pipeline (visual tree): steps run left to right per page; Unbatch loops its inner steps per event; Pages 2..N repeat</div>
+      <svg viewBox="0 0 900 372" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs><marker id="mk" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#475569"/></marker><marker id="mkp" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#7c3aed"/></marker></defs>
+        <rect x="30" y="12" width="12" height="12" rx="2" fill="#dbeafe" stroke="#1e40af"/><text x="47" y="22" font-size="10.5" fill="#334155">per page (whole batch)</text>
+        <rect x="240" y="12" width="12" height="12" rx="2" fill="#ede9fe" stroke="#7c3aed"/><text x="257" y="22" font-size="10.5" fill="#334155">per event (Unbatch loops over each record)</text>
+        <g stroke="#94a3b8" stroke-width="1.3" fill="none">
+          <path d="M125,174 H140 M140,106 V344 M140,106 H150 M140,306 H150 M140,344 H150"/>
+        </g>
+        <rect x="20" y="150" width="105" height="48" rx="8" fill="#fed7aa" stroke="#c2410c"/>
+        <text x="72" y="169" text-anchor="middle" font-size="11" font-weight="700" fill="#7c2d12">Poll</text>
+        <text x="72" y="184" text-anchor="middle" font-size="8.5" fill="#7c2d12">connection + object</text>
+        <rect x="150" y="84" width="118" height="44" rx="8" fill="#f1f5f9" stroke="#64748b"/>
+        <text x="209" y="102" text-anchor="middle" font-size="11" font-weight="700" fill="#334155">Page 1</text>
+        <text x="209" y="117" text-anchor="middle" font-size="8.5" fill="#64748b">up to pageSize records</text>
+        <rect x="150" y="290" width="118" height="32" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="209" y="310" text-anchor="middle" font-size="10.5" fill="#334155">Page 2 (same)</text>
+        <rect x="150" y="330" width="118" height="28" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+        <text x="209" y="348" text-anchor="middle" font-size="10.5" fill="#334155">… Page N (same)</text>
+        <text x="500" y="72" text-anchor="middle" font-size="9" font-weight="700" fill="#1e40af">per page, in sequence</text>
+        <rect x="288" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="333" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Analyze</text>
+        <rect x="392" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="437" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Filter</text>
+        <rect x="496" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="541" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Parse</text>
+        <rect x="600" y="86" width="100" height="40" rx="7" fill="#dbeafe" stroke="#1e40af" stroke-width="1.8"/><text x="650" y="110" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a5f">Unbatch</text>
+        <rect x="754" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="799" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Notify</text>
+        <g stroke="#475569" stroke-width="1.4" marker-end="url(#mk)">
+          <line x1="268" y1="106" x2="286" y2="106"/><line x1="378" y1="106" x2="390" y2="106"/><line x1="482" y1="106" x2="494" y2="106"/><line x1="586" y1="106" x2="598" y2="106"/><line x1="700" y1="106" x2="752" y2="106"/>
+        </g>
+        <line x1="650" y1="126" x2="650" y2="150" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#mkp)"/>
+        <text x="668" y="142" font-size="9" font-weight="700" fill="#7c3aed">↻ per event</text>
+        <rect x="558" y="150" width="192" height="150" rx="9" fill="#f5f3ff" stroke="#7c3aed" stroke-dasharray="5 3"/>
+        <text x="654" y="169" text-anchor="middle" font-size="9.5" font-weight="700" fill="#7c3aed">↻ for each of the page's records (×N)</text>
+        <rect x="575" y="178" width="158" height="30" rx="6" fill="#ede9fe" stroke="#7c3aed"/><text x="654" y="197" text-anchor="middle" font-size="10.5" fill="#4c1d95">postHook</text>
+        <rect x="575" y="216" width="158" height="30" rx="6" fill="#ede9fe" stroke="#7c3aed"/><text x="654" y="235" text-anchor="middle" font-size="10.5" fill="#4c1d95">hydrate</text>
+        <rect x="575" y="254" width="158" height="30" rx="6" fill="#ede9fe" stroke="#7c3aed"/><text x="654" y="273" text-anchor="middle" font-size="10.5" fill="#4c1d95">eventFilter</text>
+        <g stroke="#7c3aed" stroke-width="1.3" marker-end="url(#mkp)">
+          <line x1="654" y1="208" x2="654" y2="215"/><line x1="654" y1="246" x2="654" y2="253"/>
+        </g>
+      </svg>
+    </div>
+
+    <h3>Proposed pipeline</h3>
+    <p>Split <code>Unbatch</code> around a single batched deduplication barrier. Phase 1 and Phase 2 still run per event; the barrier runs once per page and makes one batched Redis call.</p>
+    <div class="fig">
+      <div class="figcap">Proposed pipeline (visual tree): Unbatch splits so Dedup runs once per page between two per-event phases</div>
+      <svg viewBox="0 0 900 372" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs><marker id="mk2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#475569"/></marker><marker id="mkp2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#7c3aed"/></marker></defs>
+        <rect x="30" y="12" width="12" height="12" rx="2" fill="#dbeafe" stroke="#1e40af"/><text x="47" y="22" font-size="10.5" fill="#334155">per page</text>
+        <rect x="150" y="12" width="12" height="12" rx="2" fill="#ede9fe" stroke="#7c3aed"/><text x="167" y="22" font-size="10.5" fill="#334155">per event (Unbatch loops over each record)</text>
+        <g stroke="#94a3b8" stroke-width="1.3" fill="none">
+          <path d="M125,174 H140 M140,106 V344 M140,106 H150 M140,306 H150 M140,344 H150"/>
+        </g>
+        <rect x="20" y="150" width="105" height="48" rx="8" fill="#fed7aa" stroke="#c2410c"/>
+        <text x="72" y="169" text-anchor="middle" font-size="11" font-weight="700" fill="#7c2d12">Poll</text>
+        <text x="72" y="184" text-anchor="middle" font-size="8.5" fill="#7c2d12">connection + object</text>
+        <rect x="150" y="84" width="118" height="44" rx="8" fill="#f1f5f9" stroke="#64748b"/>
+        <text x="209" y="102" text-anchor="middle" font-size="11" font-weight="700" fill="#334155">Page 1</text>
+        <text x="209" y="117" text-anchor="middle" font-size="8.5" fill="#64748b">up to pageSize records</text>
+        <rect x="150" y="290" width="118" height="32" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="209" y="310" text-anchor="middle" font-size="10.5" fill="#334155">Page 2 (same)</text>
+        <rect x="150" y="330" width="118" height="28" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="4 3"/>
+        <text x="209" y="348" text-anchor="middle" font-size="10.5" fill="#334155">… Page N (same)</text>
+        <text x="500" y="72" text-anchor="middle" font-size="9" font-weight="700" fill="#1e40af">per page, in sequence</text>
+        <rect x="288" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="333" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Analyze</text>
+        <rect x="392" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="437" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Filter</text>
+        <rect x="496" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="541" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Parse</text>
+        <rect x="600" y="86" width="100" height="40" rx="7" fill="#dbeafe" stroke="#1e40af" stroke-width="1.8"/><text x="650" y="104" text-anchor="middle" font-size="11" font-weight="700" fill="#1e3a5f">Unbatch</text><text x="650" y="118" text-anchor="middle" font-size="8" fill="#334155">(split)</text>
+        <rect x="754" y="86" width="90" height="40" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="799" y="110" text-anchor="middle" font-size="11" fill="#1e3a5f">Notify</text>
+        <g stroke="#475569" stroke-width="1.4" marker-end="url(#mk2)">
+          <line x1="268" y1="106" x2="286" y2="106"/><line x1="378" y1="106" x2="390" y2="106"/><line x1="482" y1="106" x2="494" y2="106"/><line x1="586" y1="106" x2="598" y2="106"/><line x1="700" y1="106" x2="752" y2="106"/>
+        </g>
+        <line x1="650" y1="126" x2="650" y2="150" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#mkp2)"/>
+        <rect x="548" y="150" width="238" height="40" rx="7" fill="#ede9fe" stroke="#7c3aed"/><text x="667" y="168" text-anchor="middle" font-size="10.5" font-weight="700" fill="#4c1d95">Phase 1  ·  postHook, hydrate</text><text x="667" y="182" text-anchor="middle" font-size="8.5" fill="#7c3aed">↻ per event (×N)</text>
+        <rect x="548" y="200" width="238" height="42" rx="7" fill="#dbeafe" stroke="#1e40af"/><text x="667" y="218" text-anchor="middle" font-size="10.5" font-weight="700" fill="#1e3a5f">Dedup  ·  batched checkAndRecord</text><text x="667" y="232" text-anchor="middle" font-size="8.5" fill="#334155">once per page</text>
+        <rect x="548" y="252" width="238" height="40" rx="7" fill="#ede9fe" stroke="#7c3aed"/><text x="667" y="270" text-anchor="middle" font-size="10.5" font-weight="700" fill="#4c1d95">Phase 2  ·  eventFilter, halt</text><text x="667" y="284" text-anchor="middle" font-size="8.5" fill="#7c3aed">↻ per event (×N)</text>
+        <g stroke="#7c3aed" stroke-width="1.3" marker-end="url(#mkp2)">
+          <line x1="667" y1="190" x2="667" y2="200"/><line x1="667" y1="242" x2="667" y2="252"/>
+        </g>
+      </svg>
+      <p class="small"><b>Ordering note.</b> The sequence shown assumes <code>useHydrationBeforePostHooks = false</code>, so <code>postHook</code> runs before <code>hydrate</code>, giving <code>postHook &rarr; hydrate &rarr; Dedup &rarr; eventFilter</code>. If <code>useHydrationBeforePostHooks = true</code>, hydrate runs before postHook. (Whether hydrate falls before or after Dedup is the separate <code>useHydrationBeforeDedup</code> flag, shown here as true; its default of false moves hydrate to after Dedup.)</p>
+    </div>
+
+    <h3>Round trips, with a 200-record page</h3>
+    <table>
+      <thead><tr><th>Approach</th><th>Redis commands</th><th>Network round trips</th><th>Approximate added latency</th></tr></thead>
+      <tbody>
+        <tr><td>Per-event (dedup inside Unbatch)</td><td>200 (one per event)</td><td><b>200</b>, sequential</td><td>~200 &times; p99, roughly a second</td></tr>
+        <tr class="rec"><td>Batched barrier (proposed)</td><td>200 (one pipeline)</td><td><b>1</b></td><td>a few milliseconds</td></tr>
+      </tbody>
+    </table>
+    <p>The command count is the same; what changes is the number of network waits. Redis executes 200 O(1) operations server-side in microseconds; the cost that matters is the round trip, and batching pays it once. Round trips therefore scale with the number of pages per poll, not with the number of records.</p>
+
+    <h3>Low-level Redis behavior</h3>
+    <ul>
+      <li><code>SET key ts NX EX 86400</code> is an atomic check-and-record. <code>NX</code> sets only if the key is absent; the reply is <code>OK</code> when the key was new (emit) and <code>nil</code> when it already existed (drop). This fuses the existence check and the write, and removes the read/write race.</li>
+      <li>A pipeline queues all the page's commands and flushes once, turning N network round trips into one. The server still runs N commands, but the client waits once.</li>
+      <li>The pipeline returns one reply per command, in order, so the reply array is the per-key verdict. This replaces a separate MGET.</li>
+      <li><code>MSET</code> cannot attach a TTL, so a plain multi-set would leave keys without expiry; use pipelined <code>SET…EX</code> or a Lua script instead.</li>
+      <li>Native per-key TTL means retention is automatic; there is no scan-and-delete prune step.</li>
+    </ul>
+<pre><span class="c">// DedupStore.checkAndRecord for Redis: one batched pipeline per page</span>
+<span class="k">const</span> pipe = redis.multi();                       <span class="c">// build a pipeline, no network yet</span>
+keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>, EX: retentionSeconds }));
+<span class="k">const</span> replies = <span class="k">await</span> pipe.run();            <span class="c">// flush once, ONE round trip</span>
+<span class="c">// reply per key, in order: "OK" = new (emit), null = already seen (drop)</span>
+<span class="k">const</span> seen = keys.filter((_, i) =&gt; replies[i] == <span class="k">null</span>);</pre>
+
+    <h3>Cache hit vs miss</h3>
+    <p>The Redis lookup is a cache check, but its meaning is inverted from an ordinary cache: a <b>hit</b> (key already present) means we have already emitted this event, so we <b>drop</b> it; a <b>miss</b> (key absent) means it is new, so we <b>emit and record</b> it.</p>
+    <div class="fig">
+      <div class="figcap">Cache hit vs miss for deduplication (one SET key NX EX per key)</div>
+      <svg viewBox="0 0 900 200" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs><marker id="ch" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#475569"/></marker></defs>
+        <rect x="20" y="78" width="120" height="40" rx="8" fill="#eff6ff" stroke="#1e40af"/><text x="80" y="102" text-anchor="middle" font-size="10.5" fill="#1e3a5f">event &#8594; dedup key</text>
+        <rect x="175" y="78" width="150" height="40" rx="8" fill="#1e293b" stroke="#0f172a"/><text x="250" y="96" text-anchor="middle" font-size="10.5" font-family="monospace" fill="#22c55e">SET key ts NX EX</text><text x="250" y="110" text-anchor="middle" font-size="8" fill="#e2e8f0">Redis</text>
+        <polygon points="420,66 486,98 420,130 354,98" fill="#fef3c7" stroke="#b45309"/><text x="420" y="94" text-anchor="middle" font-size="9.5" fill="#92400e">key already</text><text x="420" y="106" text-anchor="middle" font-size="9.5" fill="#92400e">present?</text>
+        <rect x="560" y="50" width="320" height="42" rx="8" fill="#ecfdf5" stroke="#047857"/><text x="720" y="68" text-anchor="middle" font-size="10.5" font-weight="700" fill="#065f46">MISS (reply OK, key was absent)</text><text x="720" y="83" text-anchor="middle" font-size="9.5" fill="#065f46">new event &#8594; emit + record key</text>
+        <rect x="560" y="118" width="320" height="42" rx="8" fill="#fef2f2" stroke="#b91c1c"/><text x="720" y="136" text-anchor="middle" font-size="10.5" font-weight="700" fill="#b91c1c">HIT (reply nil, key existed)</text><text x="720" y="151" text-anchor="middle" font-size="9.5" fill="#b91c1c">duplicate &#8594; drop (do not emit)</text>
+        <g stroke="#475569" stroke-width="1.4" marker-end="url(#ch)">
+          <line x1="140" y1="98" x2="173" y2="98"/><line x1="325" y1="98" x2="352" y2="98"/><line x1="486" y1="86" x2="558" y2="71"/><line x1="486" y1="110" x2="558" y2="139"/>
+        </g>
+        <text x="512" y="64" font-size="9" fill="#047857">no (miss)</text>
+        <text x="512" y="128" font-size="9" fill="#b91c1c">yes (hit)</text>
+        <text x="20" y="188" font-size="9.5" fill="#475569">Inverted from a normal cache: a HIT means we already emitted this event (so drop); a MISS is a new event (so emit).</text>
+      </svg>
+    </div>
+
+    <div class="callout c-blue">
+      <span class="t">Where hydrate runs is governed by <code>useHydrationBeforeDedup</code></span>
+      Default false runs deduplication before hydrate, so duplicates skip the costly hydrate and lazy hydration is preserved. A value of true keeps hydrate in Phase 1, required only when the key depends on hydrated fields, at the cost of a bounded whole-page hydrate near a halt. The barrier always runs after <code>postHook</code>, because <code>postHook</code> reclassifies <code>eventType</code> (which selects the key's field set) and can change cardinality.
+    </div>
+    <h3>Data model</h3>
+    <p>Each event maps to one flat, human-readable key whose value is the timestamp it was recorded, expiring by native TTL. The object and event type are encoded into the key, so lookups are independent and O(1).</p>
+    <div class="fig">
+      <div class="figcap">Redis keyspace: one flat key per deduplication key, each with its own TTL</div>
+      <svg viewBox="0 0 900 210" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <rect x="30" y="20" width="840" height="130" rx="10" fill="#1e293b" stroke="#0f172a"/>
+        <text x="50" y="48" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Message:EMAIL_RECEIVED:&lt;id&gt;_&lt;createdDateTime&gt;   &#8594;  10:00:00Z   ttl 24h</text>
+        <text x="50" y="74" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Message:UPDATED:&lt;id&gt;_&lt;lastModified&gt;_&lt;folderId&gt; &#8594;  10:04:11Z   ttl 24h</text>
+        <text x="50" y="100" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Calendar:CREATED:&lt;id&gt;_&lt;createdDateTime&gt;       &#8594;  09:58:02Z   ttl 24h</text>
+        <text x="50" y="126" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Calendar:UPDATED:&lt;id&gt;_&lt;lastModified&gt;          &#8594;  10:03:47Z   ttl 24h</text>
+        <text x="30" y="176" font-size="12" fill="#475569">key = connectionId (a GUID) : objectName : eventType : concatenated reference-field values (human-readable, not hashed)</text>
+        <text x="30" y="196" font-size="12" fill="#475569">each key carries its own TTL and expires automatically, so there is no prune sweep</text>
+      </svg>
+    </div>
+
+    <h3>Why a keyed store</h3>
+    <ul>
+      <li><b>Scales with event rate.</b> Every key is independent and O(1); there is no per-scope blob that grows with volume, and nothing is held resident in memory.</li>
+      <li><b>Native eviction.</b> Per-key TTL expires entries automatically, so retention needs no application-side prune.</li>
+      <li><b>Already in the stack.</b> Redis is present today with a low single-digit-millisecond p99, well below object-store blob latency (Section 9).</li>
+      <li><b>Why not one blob per event?</b> You could store each dedup key as its own object and let the bucket's lifecycle policy expire it (native, per-object pruning, similar to Redis's per-key TTL). But object stores have <b>no batched multi-key operation</b>, so a page of N records becomes N separate reads plus N writes, which is N round trips at object-store latency (p99 ~80 ms each). That is exactly the per-event round-trip explosion the design avoids; Redis gives the same native per-key expiry but with pipelined, batched access, so a page is one round trip.</li>
+    </ul>
+
+    <h3>Avoiding a round trip per event</h3>
+    <p>Thousands of events can arrive in one poll across pages, so a naive "one GET plus one SET per event" would be thousands of round trips. The store takes a batch of keys per page and collapses that to one or two round trips. Three techniques:</p>
+    <table>
+      <thead><tr><th>Technique</th><th>How</th><th>Round trips per page</th><th>TTL</th><th>Note</th></tr></thead>
+      <tbody>
+        <tr><td><b>MGET + pipelined SET…EX</b></td><td>MGET all keys (read), then pipeline <code>SET key ts EX</code> for the new ones (write)</td><td>2</td><td>native per-key</td><td>simplest; MSET cannot set a TTL, so a pipeline of SET…EX is used</td></tr>
+        <tr class="rec"><td><b>SET NX EX, pipelined</b></td><td>Pipeline <code>SET key ts NX EX</code> for every key; the reply per key is the verdict</td><td>1</td><td>native per-key</td><td>fuses check and record atomically; removes the read entirely</td></tr>
+        <tr><td><b>Lua / EVAL</b></td><td>One server-side script reads all keys and conditionally writes the new ones, returning which were new</td><td>1</td><td>native per-key</td><td>atomic; also hardens the rare stuck-reschedule overlap</td></tr>
+      </tbody>
+    </table>
+    <p class="small">The instance choice (dedicated vs shared Redis) is in Section 10.</p>
+
+    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="dedup-unbatch-two-phase-design.html">dedup-unbatch-two-phase-design.html</a> (the two-phase Unbatch, the decision table, and the bounded-regression argument).</p>
+  </div>
+
+  <!-- 7 -->
+  <div class="sec" id="s7">
+    <div class="sechdr"><span class="secno">7</span><span class="secttl">Alternate Design Options</span></div>
+    <p class="summary">Two alternatives were considered. Both avoid new infrastructure, but neither scales as cleanly on the high-volume tail, because a blob must either hold the whole keyset in memory or perform per-key I/O.</p>
+
+    <h3>Object-store blob <span class="pill pill-green">simple</span></h3>
+    <ul>
+      <li><b>What it is.</b> A plaintext JSON blob per (connection, object), loaded once at poll start and flushed once at poll end, the same shape as HookState.</li>
+      <li><b>Strengths.</b> Reuses the existing object store, no new infrastructure, small blobs for most connections, plaintext and debuggable, two round trips per poll.</li>
+      <li><b>Limitation.</b> The whole keyset is loaded into memory each poll, which grows on the high-volume tail. A blob can either load everything (memory) or read per key (round trips); there is no middle ground.</li>
+    </ul>
+
+    <h3>Encrypted per-instance blob <span class="pill pill-gray">status quo</span></h3>
+    <ul>
+      <li><b>What it is.</b> Today's encrypted HookState-style blob, one per element instance.</li>
+      <li><b>Strengths.</b> No new infrastructure, encrypted at the application layer.</li>
+      <li><b>Limitation.</b> Encryption and decryption cost on every poll, the largest blobs of the three options, and an O(N) in-memory scan across all objects in the instance.</li>
+    </ul>
+    <p class="src"><span class="lbl">Reference</span> &nbsp;All three storage options (Redis, object-store blob, and encrypted per-instance blob) are compared in depth, with diagrams, in <a href="dedup-store-fork-design.html">dedup-store-fork-design.html</a>.</p>
+  </div>
+
+  <!-- 8 -->
+  <div class="sec" id="s8">
+    <div class="sechdr"><span class="secno">8</span><span class="secttl">Storage Comparison</span></div>
+    <p class="summary">Redis is the preferred store because it scales to the high-volume tail. The plaintext object-store blob is the simple option when a new Redis instance is not warranted; the encrypted per-instance blob is the status quo.</p>
+    <table>
+      <thead><tr><th>Dimension</th><th class="rec">Redis (proposed)</th><th>Object-store blob</th><th>Encrypted per-instance blob</th></tr></thead>
+      <tbody>
+        <tr><td><b>Scale on the heavy tail</b></td><td class="rec">Best, O(1) per key</td><td>Limited, memory grows with volume</td><td>Worst, largest blobs</td></tr>
+        <tr><td><b>Resident memory</b></td><td class="rec">None, keys live in Redis</td><td>Whole keyset per (connection, object)</td><td>Whole keyset per instance</td></tr>
+        <tr><td><b>Round trips per poll</b></td><td class="rec">1 per page (batched)</td><td>2 (one read, one write)</td><td>2 (one read, one write)</td></tr>
+        <tr><td><b>TTL and eviction</b></td><td class="rec">Native per-key TTL</td><td>Application-managed prune</td><td>Application-managed prune</td></tr>
+        <tr><td><b>New infrastructure</b></td><td>A dedicated instance per ring and region</td><td class="rec">None</td><td class="rec">None</td></tr>
+        <tr><td><b>Debuggability</b></td><td class="rec">Readable keys</td><td class="rec">Plaintext blob</td><td>Encrypted, opaque</td></tr>
+        <tr><td><b>Simplicity</b></td><td>Moderate, needs batching and an instance</td><td class="rec">Highest, reuses object store</td><td>Moderate</td></tr>
+      </tbody>
+    </table>
+    <div class="callout c-green">
+      <span class="t">Recommendation</span>
+      <b>Redis is preferred because it scales</b>: O(1) per key, no resident keyset, native TTL, and one round trip per page once batched (Section 6). The <b>plaintext object-store blob per object is the simple option</b> and a reasonable fallback when the event volume does not justify a new Redis instance. The encrypted per-instance blob is retained only as the status quo.
+    </div>
+  </div>
+
+  <!-- 9 -->
+  <div class="sec" id="s9">
+    <div class="sechdr"><span class="secno">9</span><span class="secttl">Current Production Load</span></div>
+    <p class="summary">Before committing to a store, we measured the polling load per cloud region from "poller job metric" traces, together with object-store and Redis latencies. The data supports Redis scaling on the high-volume tail while object storage remains adequate for the common case.</p>
+    <ul>
+      <li><b>Operation rate</b> is comfortably within budget for object storage in steady state (on the order of tens of operations per second per region). Reading and writing a blob per poll fits well within that budget.</li>
+      <li><b>Blob-size distribution</b> is heavily skewed: the majority of blobs are small, with a heavy tail of large blobs where the whole-blob read-modify-write is costly.</li>
+      <li><b>Latency.</b> Redis is already in the stack with a low single-digit-millisecond p99; object-store blob p99 is materially higher, so the heavy tail is where a keyed store pays off.</li>
+    </ul>
+    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="dedup-load-assessment.html">dedup-load-assessment.html</a>, <a href="dedup-redis-load-by-region.html">dedup-redis-load-by-region.html</a>. Exact per-region figures are in those documents.</p>
+  </div>
+
+  <!-- 10 -->
+  <div class="sec" id="s10">
+    <div class="sechdr"><span class="secno">10</span><span class="secttl">Shared vs Dedicated Redis</span></div>
+    <p class="summary">The proposed design uses Redis, so the instance choice matters. Gallup today uses Udon's shared HA cluster for a single trivial configuration cache. A high-churn deduplication workload should not be co-tenanted there.</p>
+    <table>
+      <thead><tr><th style="width:24%">Dimension</th><th>Shared Udon Redis (today)</th><th class="rec">Dedicated Gallup Redis</th></tr></thead>
+      <tbody>
+        <tr><td><b>Blast radius</b></td><td>A Gallup spike affects Udon's 2FA codes, login throttling, locks, and OAuth or provisioning state</td><td class="rec">Isolated to deduplication data</td></tr>
+        <tr><td><b>Eviction interplay</b></td><td>A high-write co-tenant can trigger evictions that silently break Udon's keyspace-notify cache invalidation</td><td class="rec">Independent <code>maxmemory-policy</code></td></tr>
+        <tr><td><b>Deploy flush</b></td><td>Udon's <code>bust-redis-cache</code> Helm hook flushes the instance on every deploy, which would wipe deduplication keys and cause a burst of duplicate emits</td><td class="rec">Unaffected</td></tr>
+        <tr><td><b>Security</b></td><td>One password or ACL spans deduplication keys and Udon's high-sensitivity state</td><td class="rec">Scoped to deduplication data</td></tr>
+        <tr><td><b>Infrastructure cost</b></td><td class="rec">None new</td><td>A new instance per ring and region to provision and operate</td></tr>
+      </tbody>
+    </table>
+    <div class="callout c-amber">
+      <span class="t">Recommendation from the analysis</span>
+      <b>Use a dedicated Gallup Redis for deduplication.</b> Keep the shared Udon Redis only for Gallup's current configuration cache (a single rebuildable one-hour-TTL, circuit-breakered entry, so new infrastructure is unjustified there). The decisive reason is <b>operational coupling, not raw size</b>: Udon <b>flushes its Redis on every deploy</b> (the <code>bust-redis-cache</code> Helm hook), and the instance also holds security-critical 2FA and OAuth state. If dedup shared that instance, an Udon deploy or incident would <b>flush our dedup keys and cause a burst of duplicate emits</b>, making Gallup's correctness hostage to Udon's operations. A dedicated instance isolates dedup from that, and lets us size memory, eviction policy, and TTL independently.
+    </div>
+    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="redis-usage-udon-gallup.html">redis-usage-udon-gallup.html</a> (full inventory of both services' Redis usage). Team recommendation on the instance choice to be added.</p>
+  </div>
+
+  <!-- 11 -->
+  <div class="sec" id="s11">
+    <div class="sechdr"><span class="secno">11</span><span class="secttl">Decisions</span></div>
+    <table>
+      <thead><tr><th style="width:30%">Decision</th><th>Rationale</th><th>Alternative rejected</th></tr></thead>
+      <tbody>
+        <tr><td><b>Keyed store (Redis) is the proposed store</b></td><td>Scales to the heavy tail: O(1) per key, no resident keyset, native TTL, one round trip per page once batched</td><td>Object-store blob (simpler) and encrypted per-instance blob (status quo), whose keyset grows in memory</td></tr>
+        <tr><td><b>Single <code>lookBackTime</code> field</b></td><td>One control, with unambiguous 0 / &gt;0 semantics</td><td>Reusing <code>pollDelay</code> with an <code>enableLookBack</code> flag</td></tr>
+        <tr><td><b>No <code>enableDedup</code> flag</b></td><td>Presence of <code>dedupReferenceFields</code> with the tenant flag already means on</td><td>A redundant explicit boolean</td></tr>
+        <tr><td><b>Human-readable concatenated key</b></td><td>Debuggability; a dropped key is legible in logs</td><td>Hashing the concatenated fields</td></tr>
+        <tr><td><b>Deduplication runs before <code>EventFilter</code></b></td><td>Duplicates must not count toward the matched-object halt, and should not be emitted</td><td>Deduplication after filtering, which miscounts limits and wastes filter work</td></tr>
+        <tr><td><b>Two-phase Unbatch</b></td><td>The key needs <code>postHook</code>'s final <code>eventType</code>, and batching needs a page barrier</td><td>Deduplicating before Unbatch, which breaks because <code>postHook</code> reclassifies <code>eventType</code></td></tr>
+        <tr><td><b><code>useHydrationBeforeDedup</code> defaults to false</b></td><td>Wire-natural (absent resolves to false) and the faster path (duplicates skip hydrate)</td><td>Defaulting to true; the partial-key caveat is documented for connector authors</td></tr>
+        <tr><td><b>Dedicated Redis instance</b></td><td>Deploy-flush hazard and security co-tenancy with Udon 2FA and OAuth state</td><td>Reusing Udon's shared HA cluster</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 12 -->
+  <div class="sec" id="s12">
+    <div class="sechdr"><span class="secno">12</span><span class="secttl">Open Questions</span></div>
+    <ul>
+      <li><b>Store choice confirmation.</b> Redis is proposed (Section 5) for its scaling; the plaintext object-store blob (Section 7) is the simple fallback if a new instance is not warranted. Confirm against the load and latency evidence in Section 9.</li>
+      <li><b>Which Redis instance.</b> A dedicated Gallup Redis (recommended) versus Udon's shared instance, weighing new infrastructure per ring and region against the coupling risks in Section 10.</li>
+      <li><b>Retention model.</b> A flat 24 hours versus a look-back-bounded window. An event can only re-surface within one look-back window, and the bounded model shrinks the keyset substantially, easing the storage-scale concern.</li>
+      <li><b>Check scoping.</b> Only events within the look-back overlap window can be cross-poll duplicates. The store check could be scoped to that slice rather than the whole page.</li>
+      <li><b><code>useHydrationBeforeDedup</code> mechanism.</b> An explicit connector flag (simple, with a footgun) versus engine auto-derivation (resolve keys pre-hydrate and deduplicate early only when all fields are present).</li>
+      <li><b>Interaction edge.</b> With <code>useHydrationBeforePostHooks</code> set to true, hydrate must run first, so <code>useHydrationBeforeDedup</code> set to false is effectively upgraded to true.</li>
+    </ul>
+  </div>
+
+  <!-- 13 -->
+  <div class="sec" id="s13">
+    <div class="sechdr"><span class="secno">13</span><span class="secttl">Reference Documents</span></div>
+    <table>
+      <thead><tr><th>Document</th><th>What it covers</th><th>Section</th></tr></thead>
+      <tbody>
+        <tr><td><a href="dedup-store-fork-design.html">dedup-store-fork-design.html</a></td><td>The three storage options (Redis, object store, encrypted), compared in depth with diagrams and a worked example</td><td>5, 7, 8</td></tr>
+        <tr><td><a href="dedup-unbatch-two-phase-design.html">dedup-unbatch-two-phase-design.html</a></td><td>Two-phase Unbatch and <code>useHydrationBeforeDedup</code>; how batched deduplication runs</td><td>6</td></tr>
+        <tr><td><a href="uselastpolldate.html">uselastpolldate.html</a></td><td>Data-date versus clock watermark model</td><td>2</td></tr>
+        <tr><td><a href="outlook-dedup.html">outlook-dedup.html</a></td><td>Today's Outlook connector deduplication, prune, and limitations</td><td>2</td></tr>
+        <tr><td><a href="dedup-load-assessment.html">dedup-load-assessment.html</a></td><td>Production poller-metric load and blob-size distribution</td><td>9</td></tr>
+        <tr><td><a href="dedup-redis-load-by-region.html">dedup-redis-load-by-region.html</a></td><td>Load segmented per cloud region</td><td>9</td></tr>
+        <tr><td><a href="redis-usage-udon-gallup.html">redis-usage-udon-gallup.html</a></td><td>Udon and Gallup Redis inventory and the dedicated-instance case</td><td>10</td></tr>
+      </tbody>
+    </table>
+    <p class="small">Additional artifacts: draw.io diagrams under <code>diagrams/drawio/</code> (trigger creation, look-back window, deduplication store options, and the two problem-statement diagrams). Confluence: parent proposal <a href="https://uipath.atlassian.net/wiki/x/doK1IxU">/x/doK1IxU</a> and contract sub-page <a href="https://uipath.atlassian.net/wiki/x/14DFIxU">/x/14DFIxU</a>.</p>
+  </div>
+
+  <div class="footer">
+    Internal design document covering the problem, current behavior, proposal, contract, the proposed Redis design and its in-depth execution, alternate storage options and a comparison, production load, the Redis instance choice, implementation, customer documentation, decisions, and open questions.
+  </div>
+
+</div>
+<script>
+(function () {
+  document.querySelectorAll('.fig').forEach(function (fig) {
+    var svg = fig.querySelector('svg.story');
+    if (!svg || typeof svg.pauseAnimations !== 'function') return;
+    var toggle = fig.querySelector('[data-anim="toggle"]');
+    var restart = fig.querySelector('[data-anim="restart"]');
+    var playing = true;
+    function setIcon() { if (toggle) { toggle.textContent = playing ? '⏸' : '▶'; toggle.setAttribute('aria-label', playing ? 'Pause' : 'Play'); } }
+    if (toggle) toggle.addEventListener('click', function () {
+      playing = !playing;
+      playing ? svg.unpauseAnimations() : svg.pauseAnimations();
+      setIcon();
+    });
+    if (restart) restart.addEventListener('click', function () {
+      svg.setCurrentTime(0); svg.unpauseAnimations(); playing = true; setIcon();
+    });
+    setIcon();
+  });
+})();
+</script>
+</body>
+</html>

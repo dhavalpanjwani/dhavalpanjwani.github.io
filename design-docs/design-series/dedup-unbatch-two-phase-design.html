@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Unbatch Two-Phase Dedup — Design (internal review draft)</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --violet:#7c3aed; --violet-bg:#f5f3ff;
+    --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:1000px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:29px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 22px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:17px; color:var(--blue-d); margin:24px 0 6px;}
+  p{margin:8px 0;}
+  a{color:#1d4ed8;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.5; white-space:pre;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;} pre .f{color:#fca5a5;}
+  blockquote{margin:12px 0; padding:10px 16px; border-left:4px solid #94a3b8; background:#f1f5f9;
+      color:#334155; border-radius:0 8px 8px 0;}
+  .callout{border-radius:10px; padding:14px 16px; margin:16px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .c-violet{background:var(--violet-bg); border-color:#ddd6fe;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);} .c-violet .t{color:var(--violet);}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:top;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  .rec{background:#f0fdf4;}
+  .pill{display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; vertical-align:middle;}
+  .pill-green{background:#d1fae5; color:var(--green);} .pill-blue{background:#dbeafe; color:#1e40af;}
+  .pill-violet{background:#ede9fe; color:var(--violet);} .pill-gray{background:#e5e7eb; color:#374151;}
+  .fig{border:1px solid #e2e8f0;border-radius:10px;padding:14px 16px;background:#fff;margin:16px 0;}
+  .figcap{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;margin-bottom:8px;}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+  ul{margin:8px 0;}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0 4px;font-size:13px;}
+  .legend .it{display:flex;align-items:center;gap:7px;}
+  .sw{width:14px;height:14px;border-radius:3px;display:inline-block;border:1px solid rgba(0,0,0,.15);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Unbatch Two-Phase Dedup</h1>
+  <p class="sub">Internal review draft · the <b>in-depth of the Redis (Option&nbsp;2) path</b> from <i>Dedup Store — Open Fork &amp; Designs</i>. Option&nbsp;2's "1–2 round-trips per page" assumes Redis is handed <b>one batch of keys per page</b> — but today <code>DedupStep</code> runs per event inside <code>UnbatchStep</code>, so it isn't. This doc is <b>how that per-page batch is produced</b>: split <code>UnbatchStep</code> into Phase&nbsp;1 → Dedup&nbsp;Barrier → Phase&nbsp;2, governed by the <code>useHydrationBeforeDedup</code> flag. (The store-fork doc is <i>where dedup state lives</i>; this is <i>how the batched dedup step runs so Redis's round-trip numbers hold</i>.)</p>
+
+  <div class="callout c-blue">
+    <span class="t">The problem in one line</span>
+    Dedup wants to run as <b>one batched call per page</b> (so a keyed store does 1 round-trip, not N), but the dedup <b>key</b> depends on steps that run <b>per event inside <code>UnbatchStep</code></b> — so a naive placement forces per-event store calls. This design splits <code>UnbatchStep</code> into two per-event phases with a single batched dedup <b>barrier</b> between them.
+  </div>
+
+  <!-- ================= WHY SINGLE-PASS CAN'T BATCH ================= -->
+  <h2>Why the current single pass can't batch</h2>
+  <p><code>UnbatchStep</code> runs <b>one loop</b>: for each event it runs every inner step (<code>postHook → hydrate → dedup → eventFilter</code>) to completion, checks halt, then moves to the next event. Because <code>dedup</code> is just one of those inner steps, it is handed <b>one event at a time</b> — so a keyed store (e.g. Redis) does one round-trip <b>per event</b>, i.e. N per page.</p>
+  <p>You cannot simply defer the store call to collect a batch, because event <i>i</i>'s dedup verdict must be known <b>before</b> event <i>i</i>'s <code>eventFilter</code> runs (so a duplicate is dropped before it can increment <code>matchedCount</code> and trip the matched-object halt). Batching therefore needs a <b>barrier</b> — a point where the whole page is gathered, deduped once, and only survivors continue.</p>
+
+  <div class="callout c-violet">
+    <span class="t">Two hard constraints the barrier must respect</span>
+    <b>1. <code>postHook</code> must run before dedup.</b> <code>postHook</code> <i>reclassifies</i> <code>eventType</code> (which selects the per-type <code>dedupReferenceFields</code>) and can change cardinality (one record → many events). A key built before <code>postHook</code> would use the wrong field set. <br/>
+    <b>2. dedup must run before <code>eventFilter</code>.</b> Duplicates must be dropped before the filter, so they never count toward <code>matchedCount</code> / the matched-object halt, and never get emitted.
+  </div>
+
+  <!-- ================= THE DESIGN ================= -->
+  <h2>The design — Phase 1 · Dedup Barrier · Phase 2</h2>
+
+  <div class="legend">
+    <div class="it"><span class="sw" style="background:#eff6ff;border-color:#3b82f6"></span> <b>Phase</b> — per-event loop (unchanged mechanics)</div>
+    <div class="it"><span class="sw" style="background:#f5f3ff;border-color:#7c3aed"></span> <b>Dedup Barrier</b> — one-shot, batched, once per page</div>
+  </div>
+
+  <div class="fig">
+    <div class="figcap">Unbatch, split around a batched dedup barrier — hydrate's phase is chosen by <code>useHydrationBeforeDedup</code></div>
+    <svg viewBox="0 0 940 380" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+      <defs>
+        <marker id="ah" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+          <path d="M0,0 L7,3 L0,6 Z" fill="#475569"/>
+        </marker>
+      </defs>
+
+      <!-- Lane A: default false -->
+      <text x="30" y="26" font-size="15" font-weight="700" fill="#1e40af">useHydrationBeforeDedup = false</text>
+      <text x="30" y="44" font-size="12" fill="#64748b">(default / wire default) — dedup before hydrate</text>
+
+      <rect x="30" y="58" width="380" height="50" rx="9" fill="#eff6ff" stroke="#3b82f6"/>
+      <text x="220" y="80" font-size="13.5" font-weight="700" fill="#0f172a" text-anchor="middle">Phase 1  ·  per event</text>
+      <text x="220" y="98" font-size="12.5" fill="#334155" text-anchor="middle">postHook  (reclassify eventType, fan-out)</text>
+
+      <line x1="220" y1="108" x2="220" y2="134" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+
+      <rect x="30" y="136" width="380" height="62" rx="9" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.6"/>
+      <text x="220" y="159" font-size="13.5" font-weight="700" fill="#7c3aed" text-anchor="middle">Dedup Barrier  ·  once per page</text>
+      <text x="220" y="177" font-size="12" fill="#4c1d95" text-anchor="middle">build keys → 1 batched checkAndRecord</text>
+      <text x="220" y="192" font-size="12" fill="#4c1d95" text-anchor="middle">drop dups  ·  keyed store = 1 round-trip</text>
+
+      <line x1="220" y1="198" x2="220" y2="224" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+
+      <rect x="30" y="226" width="380" height="50" rx="9" fill="#eff6ff" stroke="#3b82f6"/>
+      <text x="220" y="248" font-size="13.5" font-weight="700" fill="#0f172a" text-anchor="middle">Phase 2  ·  per survivor</text>
+      <text x="220" y="266" font-size="12.5" fill="#334155" text-anchor="middle">hydrate → eventFilter → halt</text>
+
+      <text x="30" y="300" font-size="12" fill="#047857">✓ dups skipped before hydrate  ·  ✓ lazy hydrate + halt preserved</text>
+      <text x="30" y="318" font-size="12" fill="#047857">✓ 1 round-trip / page  ·  no hydrate-on-halt regression</text>
+
+      <!-- Lane B: true -->
+      <text x="510" y="26" font-size="15" font-weight="700" fill="#1e40af">useHydrationBeforeDedup = true</text>
+      <text x="510" y="44" font-size="12" fill="#64748b">key needs hydrated fields — hydrate before dedup</text>
+
+      <rect x="510" y="58" width="380" height="50" rx="9" fill="#eff6ff" stroke="#3b82f6"/>
+      <text x="700" y="80" font-size="13.5" font-weight="700" fill="#0f172a" text-anchor="middle">Phase 1  ·  per event</text>
+      <text x="700" y="98" font-size="12.5" fill="#334155" text-anchor="middle">postHook → hydrate</text>
+
+      <line x1="700" y1="108" x2="700" y2="134" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+
+      <rect x="510" y="136" width="380" height="62" rx="9" fill="#f5f3ff" stroke="#7c3aed" stroke-width="1.6"/>
+      <text x="700" y="159" font-size="13.5" font-weight="700" fill="#7c3aed" text-anchor="middle">Dedup Barrier  ·  once per page</text>
+      <text x="700" y="177" font-size="12" fill="#4c1d95" text-anchor="middle">build keys → 1 batched checkAndRecord</text>
+      <text x="700" y="192" font-size="12" fill="#4c1d95" text-anchor="middle">drop dups  ·  keyed store = 1 round-trip</text>
+
+      <line x1="700" y1="198" x2="700" y2="224" stroke="#475569" stroke-width="1.5" marker-end="url(#ah)"/>
+
+      <rect x="510" y="226" width="380" height="50" rx="9" fill="#eff6ff" stroke="#3b82f6"/>
+      <text x="700" y="248" font-size="13.5" font-weight="700" fill="#0f172a" text-anchor="middle">Phase 2  ·  per survivor</text>
+      <text x="700" y="266" font-size="12.5" fill="#334155" text-anchor="middle">eventFilter → halt</text>
+
+      <text x="510" y="300" font-size="12" fill="#b45309">△ whole page hydrated in Phase 1</text>
+      <text x="510" y="318" font-size="12" fill="#b45309">△ hydrate-on-halt regression (bounded to 1 page)</text>
+    </svg>
+  </div>
+
+  <h3>What each part is</h3>
+  <ul>
+    <li><b>Unbatch Phase 1</b> — the per-event pass over the page running the <b>pre-barrier</b> steps: always <code>postHook</code>; plus <code>hydrate</code> when <code>useHydrationBeforeDedup=true</code>. Cardinality can grow here (<code>postHook</code> fan-out); its output is a flat list of fully-classified events.</li>
+    <li><b>Dedup Barrier</b> — the <b>only non-per-event</b> code. All Phase-1 output is collected, keys are resolved (correct <code>eventType</code>, correct field values), and a <b>single</b> <code>Deduplicator.dedupe(...)</code> → one <code>checkAndRecord(allKeys)</code> runs. Keyed store ⇒ <b>1 round-trip per page</b>; blob store ⇒ in-memory check within the poll's load/flush bracket. Duplicates are removed here.</li>
+    <li><b>Unbatch Phase 2</b> — the per-event pass over the <b>survivors</b> running the <b>post-barrier</b> steps: <code>hydrate</code> when <code>useHydrationBeforeDedup=false</code>, then <code>eventFilter</code> with the per-event <code>checkShouldHalt</code>.</li>
+  </ul>
+
+  <!-- ================= THE CONTRACT FLAG ================= -->
+  <h2>The contract flag — <code>useHydrationBeforeDedup</code></h2>
+  <p>A new per-object field on the poller configuration, sitting alongside <code>lookBackTime</code> and <code>dedupReferenceFields</code>. It declares a <b>fact about the connector's data</b>: <i>are the dedup reference fields populated only after hydration?</i></p>
+
+  <pre><span class="c">// standard resource-object poller configuration</span>
+{
+  <span class="k">"lookBackTime"</span>: 120,
+  <span class="k">"dedupReferenceFields"</span>: { <span class="c">/* eventType → { fields: [...] } */</span> },
+  <span class="k">"useHydrationBeforeDedup"</span>: <span class="s">false</span>   <span class="c">// NEW — default false (absent on wire ⇒ false)</span>
+}</pre>
+
+  <ul>
+    <li><b><code>false</code> (default)</b> — dedup fields are present pre-hydration → run <b>dedup before hydrate</b>. Hydrate moves to Phase 2 (survivors only).</li>
+    <li><b><code>true</code></b> — key needs hydrated fields → hydrate stays in Phase 1, dedup runs after it.</li>
+  </ul>
+
+  <div class="callout c-blue">
+    <span class="t">Default is <code>false</code> — and that's both the natural contract default and the faster path</span>
+    Booleans absent on the wire arrive as <code>false</code>, so an unset connector gets <code>false</code> automatically. That lands on the <b>better-performing</b> branch: duplicates are dropped <b>before</b> the expensive hydrate, and because hydrate is back in Phase 2 (interleaved with the halt check) <b>lazy hydration is preserved</b> — no whole-page hydrate. The recommended key choice (immutable identity fields like <code>id</code> / <code>createdDateTime</code>, already in the list response) is pre-hydration, so <code>false</code> is correct for it.
+  </div>
+
+  <h3>Effective ordering (the decision table)</h3>
+  <p>Effective placement also depends on the existing <code>useHydrationBeforePostHooks</code> flag, because <code>postHook</code> must always precede the barrier:</p>
+  <table>
+    <thead><tr><th><code>useHydrationBeforeDedup</code></th><th><code>useHydrationBeforePostHooks</code></th><th>Phase 1 (per event)</th><th>Barrier</th><th>Phase 2 (per survivor)</th></tr></thead>
+    <tbody>
+      <tr class="rec"><td><b>false</b> <span class="pill pill-gray">default</span></td><td>false</td><td><code>postHook</code></td><td>dedup</td><td><code>hydrate → eventFilter</code></td></tr>
+      <tr><td>true</td><td>false</td><td><code>postHook → hydrate</code></td><td>dedup</td><td><code>eventFilter</code></td></tr>
+      <tr><td>any</td><td>true</td><td><code>hydrate → postHook</code></td><td>dedup</td><td><code>eventFilter</code></td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-violet">
+    <span class="t">Override</span>
+    If <code>useHydrationBeforePostHooks=true</code>, hydrate <b>must</b> run before <code>postHook</code>, so dedup-before-hydrate is impossible — <code>useHydrationBeforeDedup=false</code> is <b>effectively upgraded to <code>true</code></b> (bottom row). Define the rule as: <i>“<code>false</code> is honored only when hydrate does not already precede <code>postHook</code>.”</i>
+  </div>
+
+  <!-- ================= CORRECTNESS CAVEAT ================= -->
+  <h2>The one correctness caveat of default <code>false</code></h2>
+  <p>With <code>false</code>, keys are built <b>pre-hydration</b>. If a declared reference field is only populated by hydration, its value is empty at key time. The resolver already handles the <b>all-missing</b> case safely (empty key ⇒ event always <b>kept</b>, never recorded). The danger is a <b>partial</b> key:</p>
+  <div class="callout c-red">
+    <span class="t">Partial key ⇒ a real event can be silently dropped</span>
+    Dedup fields = <code>[id, lastModifiedDateTime]</code> where <code>id</code> is in the list response but <code>lastModifiedDateTime</code> is only set by hydration. Pre-hydration, two distinct <code>UPDATED</code> events on the same record both resolve to <code>"&lt;id&gt;_"</code> → the second is treated as a duplicate of the first and <b>dropped</b>. Over-dedup, not under-dedup — a genuine event is lost.
+  </div>
+  <div class="callout c-amber">
+    <span class="t">Connector author rule (must document)</span>
+    <b>If any declared <code>dedupReferenceFields</code> value is populated only by hydration, you MUST set <code>useHydrationBeforeDedup=true</code>.</b> Otherwise dedup runs pre-hydration and those fields are empty, risking incorrect dedup. Keep dedup keys to identifiers present in the list response wherever possible.<br/>
+    <span class="small">Alternative considered: the engine could <b>auto-derive</b> this — resolve keys pre-hydrate and dedup early only when every field already has a value, else fall back to hydrate-first. Removes the footgun at the cost of a pre-branch key resolution per event. Explicit flag chosen for simplicity/predictability; auto-derive remains open if the footgun proves real.</span>
+  </div>
+
+  <!-- ================= HALT BEHAVIOR ================= -->
+  <h2>Halt behavior &amp; the bounded regression</h2>
+  <p><code>UnbatchStep</code> checks halt <b>after each event</b> and <code>break</code>s the loop when a limit trips — so it halts <b>mid-page</b>: remaining records in the page are not processed, and the <code>halted</code> flag propagates up to stop <b>pagination</b> too. The tripping event itself is fully processed and emitted; processing stops <i>after</i> it.</p>
+  <table>
+    <thead><tr><th>Branch</th><th>Hydrate placement</th><th>Mid-page halt effect on hydrate</th></tr></thead>
+    <tbody>
+      <tr class="rec"><td><code>false</code> (default)</td><td>Phase 2, interleaved with halt</td><td><b>Lazy</b> — survivors past the halt point are never hydrated. No regression (better than today: dups also skipped).</td></tr>
+      <tr><td><code>true</code></td><td>Phase 1, whole page up front</td><td><b>Over-hydrate</b> the post-halt tail of the current page.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-green">
+    <span class="t">The regression exists only in the <code>true</code> branch, and is bounded three ways</span>
+    <b>(1) Dedup-on only</b> — keep today's single-pass loop when no deduplicator is wired, so the default (dedup-off) path is byte-for-byte unchanged. <b>(2) Mid-page-halt only</b> — most polls never hit a limit mid-page. <b>(3) One page only</b> — halt still stops pagination, so over-hydrate is capped at the single page that halted, never spilling into later pages.
+  </div>
+
+  <!-- ================= PSEUDOCODE ================= -->
+  <h2>Sketch — <code>UnbatchStep.execute</code> two-phase</h2>
+  <pre><span class="k">async</span> execute(emitter, result) {
+  <span class="k">if</span> (!this.deduplicator) <span class="k">return</span> this.<span class="f">runSinglePass</span>(emitter, result); <span class="c">// today's loop, unchanged</span>
+
+  <span class="c">// ---- Unbatch Phase 1 : per event, pre-barrier steps ----</span>
+  <span class="k">let</span> phase1Out = [];
+  <span class="k">for</span> (<span class="k">const</span> ev <span class="k">of</span> result.value) {
+    <span class="k">let</span> events = [ev];
+    <span class="k">for</span> (<span class="k">const</span> step <span class="k">of</span> this.preBarrierSteps) events = (<span class="k">await</span> step.execute(ie, {value: events})).value;
+    phase1Out.push(...events);                 <span class="c">// postHook fan-out flattened</span>
+  }
+
+  <span class="c">// ---- Dedup Barrier : once per page, batched ----</span>
+  <span class="k">const</span> { kept } = <span class="k">await</span> this.deduplicator.<span class="f">dedupe</span>(phase1Out, this.dedupContext); <span class="c">// 1 checkAndRecord</span>
+  emitter.emit(<span class="s">'eventPollerDedup'</span>, { dropped: phase1Out.length - kept.length });
+
+  <span class="c">// ---- Unbatch Phase 2 : per survivor, post-barrier steps + halt ----</span>
+  <span class="k">for</span> (<span class="k">const</span> ev <span class="k">of</span> kept) {
+    <span class="k">let</span> events = [ev];
+    <span class="k">for</span> (<span class="k">const</span> step <span class="k">of</span> this.postBarrierSteps) events = (<span class="k">await</span> step.execute(ie, {value: events})).value;
+    <span class="k">if</span> (this.<span class="f">checkShouldHalt</span>(...)) { halted = <span class="k">true</span>; <span class="k">break</span>; }  <span class="c">// mid-page halt, stops pagination</span>
+  }
+  <span class="c">// ...emit merged state (same resultMap semantics as today)...</span>
+}</pre>
+  <p class="small"><code>preBarrierSteps</code> / <code>postBarrierSteps</code> are the inner-step list split at the dedup point per the decision table. <code>DeduplicationService</code>, <code>DedupStore</code> and the store contract are untouched — this is purely a restructure inside <code>UnbatchStep</code>. The standalone <code>DedupStep</code> either disappears or becomes a marker identifying the split point.</p>
+
+  <div class="footer">
+    Naming: <b>Unbatch Phase 1</b> → <b>Dedup Barrier</b> → <b>Unbatch Phase 2</b>. “Phase” = per-event loop; “Barrier” = the one-shot batched dedup between them. · ENGCE-58349 · internal review draft, not yet in Confluence.
+  </div>
+
+</div>
+</body>
+</html>

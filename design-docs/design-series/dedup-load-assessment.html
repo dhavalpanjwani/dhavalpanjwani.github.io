@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Dedup Store — Prod Load Assessment (per region · per connector)</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:1040px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:29px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 22px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:17px; color:var(--blue-d); margin:24px 0 6px;}
+  p{margin:8px 0;}
+  a{color:#1d4ed8;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.5; white-space:pre;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;}
+  blockquote{margin:12px 0; padding:10px 16px; border-left:4px solid #94a3b8; background:#f1f5f9;
+      color:#334155; border-radius:0 8px 8px 0;}
+  .callout{border-radius:10px; padding:14px 16px; margin:16px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  td.n,th.n{text-align:right; font-variant-numeric:tabular-nums;}
+  .rec{background:#f0fdf4;}
+  tr.named td{background:#fffdf5;}
+  .pill{display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; vertical-align:middle;}
+  .pill-green{background:#d1fae5; color:var(--green);} .pill-blue{background:#dbeafe; color:#1e40af;} .pill-gray{background:#e5e7eb; color:#374151;}
+  .pill-amber{background:#fef3c7; color:#92400e;}
+  .fig{border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;background:#fff;margin:14px 0;}
+  .figcap{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;margin-bottom:6px;}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+  ul{margin:8px 0;}
+  .kpi-row{display:flex; gap:14px; flex-wrap:wrap; margin:16px 0;}
+  .kpi{flex:1; min-width:170px; border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:#fff;}
+  .kpi .v{font-size:24px; font-weight:800; color:var(--blue-d); font-variant-numeric:tabular-nums;}
+  .kpi .l{font-size:12px; color:var(--muted); margin-top:2px;}
+  .bar{height:9px; border-radius:5px; background:#3b82f6; display:inline-block; vertical-align:middle;}
+  .barbg{background:#eef2f7; border-radius:5px; display:inline-block; width:120px; vertical-align:middle; margin-right:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Dedup Store — Prod Load Assessment</h1>
+  <p class="sub">Companion to <code>dedup-store-fork-design.html</code> (ENGCE-58349). Measured prod polling &amp; emit load <b>per region · per connector</b>, translated into projected dedup-store cost (Redis vs object store) for each of the three storage options. <b>Internal review draft.</b></p>
+
+  <div class="callout c-blue">
+    <span class="t">What this answers</span>
+    If we add platform <b>look-back + dedup</b> to these connectors, <b>what load does each region carry, per connector, to poll and to dedup</b> — and how does that load land on <span class="pill pill-blue">Redis</span> (Option 2) vs the <span class="pill pill-green">object-store blob</span> (Options 1 / 3)? Numbers below are <b>measured</b>, not modelled, then extrapolated to per-day / per-second / per-poll.
+  </div>
+
+  <!-- ============ METHODOLOGY ============ -->
+  <h2>Data source &amp; method</h2>
+  <ul>
+    <li><b>Source:</b> Application Insights <code>intsvc-prd-all-ne-appins</code> (North Europe) — the single prod instance that <b>all regions</b> report to. One <code>traces</code> row per <b>completed poll execution</b> (message = <code>"poller job metric"</code>), with per-poll aggregated counts across pages.</li>
+    <li><b>Window:</b> <b>7 days</b> (2026-06-21 → 28), reported as <b>per-day averages</b> plus peaks. Smooths day-of-week variation.</li>
+    <li><b>Region</b> = <code>cloud_RoleName</code> (e.g. <code>gallupx_az-eu-prod-0</code>) — 13 regional clusters all funnel into the one App Insights.</li>
+    <li><b>Connector</b> = <code>elementKey</code>. <b>Poll</b> = one metric row. <b>Emitted/matched</b> = <code>matchedCount</code> (post-filter events actually emitted — the records a dedup store would key &amp; store). <b>Polled</b> = <code>polledObjectCount</code> (records fetched from the source). <b>Pages</b> = <code>pageCount</code>.</li>
+    <li><b>Connectors:</b> the 4 requested — <span class="pill pill-amber">Outlook</span> <span class="pill pill-amber">Salesforce</span> <span class="pill pill-amber">Box</span> <span class="pill pill-amber">Jira</span> — plus the next highest by load (Gmail, OneDrive, Google Sheets, Google Drive, Teams, ServiceNow, Zendesk). Test connectors (<code>uipath-mock-element</code>, <code>custom-*</code>) excluded.</li>
+  </ul>
+<pre><span class="c">// base query (per-region/per-connector aggregations layered on top)</span>
+traces
+| <span class="k">where</span> message == <span class="s">"poller job metric"</span>
+| <span class="k">extend</span> region=tostring(cloud_RoleName), ek=tostring(customDimensions.elementKey),
+         matched=toint(customDimensions.matchedCount),
+         polled=toint(customDimensions.polledObjectCount),
+         pages=toint(customDimensions.pageCount)
+| <span class="k">summarize</span> polls=count(), emitted=sum(matched), polled=sum(polled) <span class="k">by</span> ek, region</pre>
+
+  <!-- ============ HEADLINE ============ -->
+  <h2>Headline findings</h2>
+  <div class="kpi-row">
+    <div class="kpi"><div class="v">~4.6M</div><div class="l">polls / day across the 11 connectors (~53 / sec global avg)</div></div>
+    <div class="kpi"><div class="v">~76K</div><div class="l">emitted events / day — the <i>only</i> records a dedup store stores</div></div>
+    <div class="kpi"><div class="v">~0</div><div class="l">median &amp; p99 emitted <i>per poll</i> — most polls emit nothing</div></div>
+    <div class="kpi"><div class="v">~43/s</div><div class="l">peak polls/sec in the busiest single region (com-eu)</div></div>
+  </div>
+
+  <div class="callout c-amber">
+    <span class="t">The load is dominated by poll frequency, not by data volume.</span>
+    Across all 11 connectors, the <b>median and p99 emitted-per-poll is 0</b> — the overwhelming majority of polls return nothing new. So the dedup work driven by <i>emitted events</i> is tiny (~76K entries/day globally). <b>The cost that actually scales is the per-poll dedup-store round-trip itself</b>: every one of the ~4.6M polls/day must consult the store (read existing keys, write any new ones) <i>even when zero events are emitted</i>. This is the key fork between the options:
+    <ul style="margin:6px 0 0;">
+      <li><span class="pill pill-green">Object store (Opt 1/3)</span> pays a full <b>GET + PUT (read-modify-write) of the blob every poll</b> → ~2 object-store ops per poll → <b>~106 ops/sec global, ~86/sec peak in one region</b>, almost all of it rewriting a blob that <i>did not change</i>.</li>
+      <li><span class="pill pill-blue">Redis (Opt 2)</span> pays <b>1–2 bounded round-trips per poll</b> (MGET/Lua over the page's keys) and <b>does nothing on the empty pages</b> beyond a tiny read.</li>
+    </ul>
+  </div>
+
+  <!-- ============ TOP CONNECTORS ============ -->
+  <h2>1 · Connector load ranking <span class="small">(all regions, 7-day average)</span></h2>
+  <p>Polls/day is the dedup-store <b>op frequency</b> driver; emitted/day is the dedup-store <b>size/write</b> driver. Note how they diverge — Outlook dominates polling <i>and</i> emits; Google Sheets/OneDrive poll heavily but emit almost nothing; Salesforce/Jira/ServiceNow poll little but emit a lot <i>per poll</i> (real CRM/ticket change streams).</p>
+  <table>
+    <thead><tr>
+      <th>Connector</th><th class="n">polls/day</th><th class="n">polls/sec</th>
+      <th class="n">emitted/day</th><th class="n">emit/poll (avg)</th>
+      <th class="n">records polled/day</th><th class="n">(conn,object) pairs</th>
+    </tr></thead>
+    <tbody>
+      <tr class="named"><td><b>Outlook 365</b> 🟠</td><td class="n">2,382,480</td><td class="n">27.6</td><td class="n">38,649</td><td class="n">0.016</td><td class="n">1,607,952</td><td class="n">4,784</td></tr>
+      <tr><td>Gmail</td><td class="n">881,413</td><td class="n">10.2</td><td class="n">6,858</td><td class="n">0.008</td><td class="n">502,382</td><td class="n">2,289</td></tr>
+      <tr><td>OneDrive</td><td class="n">599,130</td><td class="n">6.9</td><td class="n">3,169</td><td class="n">0.005</td><td class="n">2,841,166</td><td class="n">1,222</td></tr>
+      <tr><td>Google Sheets</td><td class="n">230,007</td><td class="n">2.7</td><td class="n">1,324</td><td class="n">0.006</td><td class="n">26,658,652</td><td class="n">511</td></tr>
+      <tr><td>Google Drive</td><td class="n">220,623</td><td class="n">2.6</td><td class="n">347</td><td class="n">0.002</td><td class="n">227,238</td><td class="n">566</td></tr>
+      <tr><td>Teams</td><td class="n">96,370</td><td class="n">1.1</td><td class="n">95</td><td class="n">0.001</td><td class="n">1,786</td><td class="n">200</td></tr>
+      <tr class="named"><td><b>Salesforce</b> 🟠</td><td class="n">55,897</td><td class="n">0.65</td><td class="n">11,089</td><td class="n">0.198</td><td class="n">419,384</td><td class="n">121</td></tr>
+      <tr><td>ServiceNow</td><td class="n">47,517</td><td class="n">0.55</td><td class="n">7,322</td><td class="n">0.154</td><td class="n">241,068</td><td class="n">88</td></tr>
+      <tr class="named"><td><b>Jira</b> 🟠</td><td class="n">46,701</td><td class="n">0.54</td><td class="n">6,138</td><td class="n">0.131</td><td class="n">108,477</td><td class="n">74</td></tr>
+      <tr><td>Zendesk</td><td class="n">8,476</td><td class="n">0.10</td><td class="n">833</td><td class="n">0.098</td><td class="n">141,782</td><td class="n">19</td></tr>
+      <tr class="named"><td><b>Box</b> 🟠</td><td class="n">3,996</td><td class="n">0.05</td><td class="n">126</td><td class="n">0.032</td><td class="n">70,545</td><td class="n">8</td></tr>
+      <tr style="font-weight:700;background:#f1f5f9"><td>TOTAL (11)</td><td class="n">4,572,609</td><td class="n">52.9</td><td class="n">75,950</td><td class="n">—</td><td class="n">~32.8M</td><td class="n">9,882</td></tr>
+    </tbody>
+  </table>
+  <p class="small">🟠 = one of the 4 explicitly requested connectors. "Records polled/day" is what the source returns each poll (incl. look-back re-scan), <i>before</i> filtering — Google Sheets at ~27M/day reflects polling large spreadsheets row-by-row, yet only ~1.3K rows/day are actually emitted.</p>
+
+  <!-- ============ REGIONS ============ -->
+  <h2>2 · Load by region <span class="small">(all connectors)</span></h2>
+  <p>Three regions — <b>EU, US, COM-EU</b> — carry the overwhelming majority of polling. The remaining 10 are an order of magnitude smaller. Peak polls/min sizes the worst-case dedup-store op rate a single region must absorb.</p>
+  <table>
+    <thead><tr><th>Region (<code>cloud_RoleName</code>)</th><th class="n">peak polls/min</th><th class="n">peak polls/sec</th><th class="n">median polls/min</th><th class="n">≈ polls/day</th><th>relative</th></tr></thead>
+    <tbody>
+      <tr><td>az-eu-prod-0</td><td class="n">2,498</td><td class="n">41.6</td><td class="n">1,322</td><td class="n">~1.90M</td><td><span class="barbg"><span class="bar" style="width:120px"></span></span></td></tr>
+      <tr><td>az-com-eu-prod-0</td><td class="n">2,572</td><td class="n">42.9</td><td class="n">930</td><td class="n">~1.34M</td><td><span class="barbg"><span class="bar" style="width:85px"></span></span></td></tr>
+      <tr><td>az-us-prod-0</td><td class="n">1,111</td><td class="n">18.5</td><td class="n">825</td><td class="n">~1.19M</td><td><span class="barbg"><span class="bar" style="width:75px"></span></span></td></tr>
+      <tr><td>az-in-prod-0</td><td class="n">136</td><td class="n">2.3</td><td class="n">131</td><td class="n">~189K</td><td><span class="barbg"><span class="bar" style="width:12px"></span></span></td></tr>
+      <tr><td>az-jp-prod-0</td><td class="n">161</td><td class="n">2.7</td><td class="n">97</td><td class="n">~140K</td><td><span class="barbg"><span class="bar" style="width:9px"></span></span></td></tr>
+      <tr><td>az-sg-prod-0</td><td class="n">92</td><td class="n">1.5</td><td class="n">80</td><td class="n">~115K</td><td><span class="barbg"><span class="bar" style="width:7px"></span></span></td></tr>
+      <tr><td>az-au-prod-0</td><td class="n">77</td><td class="n">1.3</td><td class="n">65</td><td class="n">~94K</td><td><span class="barbg"><span class="bar" style="width:6px"></span></span></td></tr>
+      <tr><td>az-ca-prod-0</td><td class="n">60</td><td class="n">1.0</td><td class="n">58</td><td class="n">~84K</td><td><span class="barbg"><span class="bar" style="width:5px"></span></span></td></tr>
+      <tr><td>az-uk-prod-0</td><td class="n">65</td><td class="n">1.1</td><td class="n">55</td><td class="n">~79K</td><td><span class="barbg"><span class="bar" style="width:5px"></span></span></td></tr>
+      <tr><td>az-gxp-us-prod-0</td><td class="n">55</td><td class="n">0.9</td><td class="n">41</td><td class="n">~59K</td><td><span class="barbg"><span class="bar" style="width:4px"></span></span></td></tr>
+      <tr><td>az-gxp-eu-prod-0</td><td class="n">17</td><td class="n">0.3</td><td class="n">16</td><td class="n">~23K</td><td><span class="barbg"><span class="bar" style="width:2px"></span></span></td></tr>
+      <tr><td>az-szn-prod-0</td><td class="n">5</td><td class="n">0.1</td><td class="n">3</td><td class="n">~4K</td><td><span class="barbg"><span class="bar" style="width:1px"></span></span></td></tr>
+      <tr><td>az-uan-prod-0</td><td class="n">2</td><td class="n">0.03</td><td class="n">1</td><td class="n">~1K</td><td><span class="barbg"><span class="bar" style="width:1px"></span></span></td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-blue">
+    <span class="t">Sizing takeaway</span>
+    A dedup store provisioned per region only needs to absorb <b>~43 polls/sec at the very peak</b> in the two busiest regions (EU, COM-EU) — i.e. <b>~86 object-store ops/sec</b> (Opt 1/3) or <b>~43–86 Redis cmds/sec</b> (Opt 2) at peak. <b>All other 10 regions are under ~3 polls/sec.</b> This is a modest, comfortably-handled rate for either backend.
+  </div>
+
+  <!-- ============ MATRIX ============ -->
+  <h2>3 · Connector × region matrix <span class="small">(7-day totals)</span></h2>
+  <p>Per-connector regional split. <code>polls</code> drives op frequency; <code>emitted</code> drives store size. Only regions with material traffic shown; sorted by polls within each connector.</p>
+  <table>
+    <thead><tr><th>Connector</th><th>Region</th><th class="n">polls (7d)</th><th class="n">connections</th><th class="n">emitted (7d)</th><th class="n">polled (7d)</th></tr></thead>
+    <tbody>
+      <tr class="named"><td rowspan="3"><b>Outlook 365</b></td><td>az-eu-prod-0</td><td class="n">7,931,940</td><td class="n">2,256</td><td class="n">138,401</td><td class="n">5,653,959</td></tr>
+      <tr class="named"><td>az-us-prod-0</td><td class="n">4,820,250</td><td class="n">1,309</td><td class="n">93,710</td><td class="n">3,924,214</td></tr>
+      <tr class="named"><td>az-com-eu-prod-0</td><td class="n">2,390,271</td><td class="n">738</td><td class="n">26,795</td><td class="n">848,458</td></tr>
+      <tr><td rowspan="3">Gmail</td><td>az-com-eu-prod-0</td><td class="n">3,703,169</td><td class="n">1,462</td><td class="n">15,356</td><td class="n">884,955</td></tr>
+      <tr><td>az-eu-prod-0</td><td class="n">1,346,378</td><td class="n">446</td><td class="n">16,587</td><td class="n">1,945,469</td></tr>
+      <tr><td>az-us-prod-0</td><td class="n">561,777</td><td class="n">191</td><td class="n">13,585</td><td class="n">346,408</td></tr>
+      <tr><td rowspan="3">OneDrive</td><td>az-eu-prod-0</td><td class="n">1,899,112</td><td class="n">405</td><td class="n">13,141</td><td class="n">19,286,171</td></tr>
+      <tr><td>az-us-prod-0</td><td class="n">1,116,344</td><td class="n">263</td><td class="n">7,552</td><td class="n">363,564</td></tr>
+      <tr><td>az-com-eu-prod-0</td><td class="n">692,298</td><td class="n">176</td><td class="n">739</td><td class="n">153,550</td></tr>
+      <tr><td rowspan="3">Google Sheets</td><td>az-com-eu-prod-0</td><td class="n">551,563</td><td class="n">207</td><td class="n">1,553</td><td class="n">36,253,814</td></tr>
+      <tr><td>az-us-prod-0</td><td class="n">507,847</td><td class="n">53</td><td class="n">1,041</td><td class="n">124,679,098</td></tr>
+      <tr><td>az-eu-prod-0</td><td class="n">438,137</td><td class="n">118</td><td class="n">6,674</td><td class="n">24,634,600</td></tr>
+      <tr><td rowspan="3">Google Drive</td><td>az-com-eu-prod-0</td><td class="n">510,520</td><td class="n">218</td><td class="n">578</td><td class="n">140,470</td></tr>
+      <tr><td>az-eu-prod-0</td><td class="n">508,520</td><td class="n">189</td><td class="n">778</td><td class="n">594,753</td></tr>
+      <tr><td>az-us-prod-0</td><td class="n">276,447</td><td class="n">75</td><td class="n">953</td><td class="n">477,794</td></tr>
+      <tr><td rowspan="2">Teams</td><td>az-eu-prod-0</td><td class="n">307,167</td><td class="n">50</td><td class="n">547</td><td class="n">10,608</td></tr>
+      <tr><td>az-us-prod-0</td><td class="n">209,581</td><td class="n">27</td><td class="n">87</td><td class="n">1,544</td></tr>
+      <tr class="named"><td rowspan="3"><b>Salesforce</b></td><td>az-eu-prod-0</td><td class="n">210,672</td><td class="n">44</td><td class="n">42,572</td><td class="n">759,918</td></tr>
+      <tr class="named"><td>az-us-prod-0</td><td class="n">113,798</td><td class="n">37</td><td class="n">34,359</td><td class="n">2,145,068</td></tr>
+      <tr class="named"><td>az-au-prod-0</td><td class="n">24,663</td><td class="n">6</td><td class="n">664</td><td class="n">23,634</td></tr>
+      <tr><td rowspan="3">ServiceNow</td><td>az-eu-prod-0</td><td class="n">120,093</td><td class="n">42</td><td class="n">5,043</td><td class="n">1,293,563</td></tr>
+      <tr><td>az-us-prod-0</td><td class="n">116,101</td><td class="n">22</td><td class="n">3,774</td><td class="n">309,361</td></tr>
+      <tr><td>az-in-prod-0</td><td class="n">85,016</td><td class="n">15</td><td class="n">42,434</td><td class="n">84,600</td></tr>
+      <tr class="named"><td rowspan="3"><b>Jira</b></td><td>az-us-prod-0</td><td class="n">193,896</td><td class="n">21</td><td class="n">41,371</td><td class="n">753,606</td></tr>
+      <tr class="named"><td>az-eu-prod-0</td><td class="n">69,218</td><td class="n">17</td><td class="n">451</td><td class="n">3,581</td></tr>
+      <tr class="named"><td>az-uk-prod-0</td><td class="n">22,175</td><td class="n">2</td><td class="n">1,141</td><td class="n">1,142</td></tr>
+      <tr><td rowspan="3">Zendesk</td><td>az-jp-prod-0</td><td class="n">20,161</td><td class="n">1</td><td class="n">0</td><td class="n">64</td></tr>
+      <tr><td>az-eu-prod-0</td><td class="n">17,979</td><td class="n">7</td><td class="n">1,172</td><td class="n">522,599</td></tr>
+      <tr><td>az-com-eu-prod-0</td><td class="n">11,787</td><td class="n">3</td><td class="n">4,091</td><td class="n">145,842</td></tr>
+      <tr class="named"><td rowspan="3"><b>Box</b></td><td>az-us-prod-0</td><td class="n">14,666</td><td class="n">4</td><td class="n">865</td><td class="n">464,284</td></tr>
+      <tr class="named"><td>az-eu-prod-0</td><td class="n">9,966</td><td class="n">2</td><td class="n">10</td><td class="n">798</td></tr>
+      <tr class="named"><td>az-jp-prod-0</td><td class="n">2,013</td><td class="n">1</td><td class="n">7</td><td class="n">28,732</td></tr>
+    </tbody>
+  </table>
+  <p class="small">Notable: <b>ServiceNow in az-in-prod-0</b> emits 42K events from only 85K polls (~0.5 emit/poll — a very active incident stream on few connections); <b>Jira / Salesforce concentrate in US</b>; <b>Outlook is genuinely global</b> (present in all 13 regions).</p>
+
+  <!-- ============ PER-POLL DISTRIBUTION ============ -->
+  <h2>4 · Per-poll emitted distribution <span class="small">(batch size a dedup op must handle)</span></h2>
+  <p>This is the single most important shape for the design: <b>how many events does one poll hand the dedup store?</b> The answer is "almost always zero, occasionally a burst."</p>
+  <table>
+    <thead><tr><th>Connector</th><th class="n">avg/poll</th><th class="n">p50</th><th class="n">p95</th><th class="n">p99</th><th class="n">max/poll</th><th class="n">max pages</th><th class="n">max records polled/poll</th></tr></thead>
+    <tbody>
+      <tr><td>Google Sheets</td><td class="n">0.01</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">1,011</td><td class="n">1</td><td class="n">11,122</td></tr>
+      <tr class="named"><td><b>Salesforce</b></td><td class="n">0.20</td><td class="n">0</td><td class="n">1</td><td class="n">2</td><td class="n">1,000</td><td class="n">20</td><td class="n">1,000</td></tr>
+      <tr class="named"><td><b>Outlook 365</b></td><td class="n">0.02</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">684</td><td class="n">20</td><td class="n">1,000</td></tr>
+      <tr><td>Gmail</td><td class="n">0.01</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">594</td><td class="n">2</td><td class="n">1,000</td></tr>
+      <tr><td>OneDrive</td><td class="n">0.01</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">535</td><td class="n">53</td><td class="n">3,215</td></tr>
+      <tr><td>ServiceNow</td><td class="n">0.15</td><td class="n">0</td><td class="n">0</td><td class="n">1</td><td class="n">477</td><td class="n">20</td><td class="n">1,000</td></tr>
+      <tr class="named"><td><b>Jira</b></td><td class="n">0.13</td><td class="n">0</td><td class="n">0</td><td class="n">1</td><td class="n">191</td><td class="n">20</td><td class="n">1,000</td></tr>
+      <tr><td>Zendesk</td><td class="n">0.10</td><td class="n">0</td><td class="n">0</td><td class="n">3</td><td class="n">14</td><td class="n">20</td><td class="n">1,000</td></tr>
+      <tr class="named"><td><b>Box</b></td><td class="n">0.03</td><td class="n">0</td><td class="n">0</td><td class="n">1</td><td class="n">13</td><td class="n">20</td><td class="n">1,000</td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-green">
+    <span class="t">Why this favours batched Redis (Opt 2) — and exposes Opt 1/3's waste</span>
+    Because p50–p99 emitted/poll is <b>0–2</b>, the dedup batch per poll is almost always empty or tiny. The design's batched Redis path (1 MGET + pipelined SET, or 1 Lua RTT) is <b>~1–3 ms regardless</b>, and on the (vast majority) empty polls it's a single tiny read. The rare burst (max ~1,000, capped by page size) is exactly the case batching was built for. By contrast the <b>object-store option rewrites the whole blob on every one of those empty polls too</b> — pure write amplification for no state change.
+  </div>
+
+  <!-- ============ HOTSPOTS ============ -->
+  <h2>5 · Hot (connection, object) pairs <span class="small">(worst-case store size)</span></h2>
+  <p>A single <code>(connectionId, objectName)</code> pair owns one blob (Opt 1) or one slice of the keyspace. The busiest observed pairs, by emitted events in a single day:</p>
+  <table>
+    <thead><tr><th>Connector · object</th><th class="n">emitted/day (peak)</th><th class="n">polls/day</th><th class="n">max/poll</th><th class="n">Opt 1/3 blob @24h</th><th class="n">Redis keys / mem</th></tr></thead>
+    <tbody>
+      <tr class="named"><td><b>Salesforce</b> · Opportunity</td><td class="n">23,066</td><td class="n">288</td><td class="n">1,000</td><td class="n">~8.1 MB</td><td class="n">23,066 / ~9 MB</td></tr>
+      <tr class="named"><td><b>Jira</b> · issue</td><td class="n">7,710</td><td class="n">288</td><td class="n">191</td><td class="n">~2.7 MB</td><td class="n">7,710 / ~3 MB</td></tr>
+      <tr><td>ServiceNow · incident</td><td class="n">6,093</td><td class="n">288</td><td class="n">477</td><td class="n">~2.1 MB</td><td class="n">6,093 / ~2.4 MB</td></tr>
+      <tr class="named"><td><b>Outlook</b> · Message (busy mailbox)</td><td class="n">3,463</td><td class="n">851</td><td class="n">93</td><td class="n">~1.2 MB</td><td class="n">3,463 / ~1.4 MB</td></tr>
+      <tr><td>OneDrive · changes-history</td><td class="n">3,001</td><td class="n">1,303</td><td class="n">535</td><td class="n">~1.1 MB</td><td class="n">3,001 / ~1.2 MB</td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-amber">
+    <span class="t">The design's "100K/24h = 35 MB" outlier is ~4× the observed prod max</span>
+    The hottest real pair today is <b>~23K emitted/24h ≈ an 8 MB blob</b> (Salesforce Opportunity). The design's 100K/24h worst-case (35 MB blob, ~0.5–1.5 s parse/stringify, 290× write amplification <i>every poll</i>) is a deliberate ~4.3× headroom scenario — but the <b>direction is real</b>: these top-5 pairs are exactly where Option 1/3's read-modify-write becomes a multi-MB-per-poll cost while Redis stays flat (bounded to the page's keys). For the other ~9,800 pairs, blobs are sub-100 KB and Option 1/3 is cheap.
+  </div>
+
+  <!-- ============ COST PROJECTION ============ -->
+  <h2>6 · Projected dedup-store cost — Redis vs object store</h2>
+  <p>Translating the measured load onto each backend, per connector (all regions). <b>Object-store ops/sec = polls/sec × 2</b> (GET+PUT every poll). <b>Redis cmds/sec ≈ polls/sec × 1–2</b> (MGET+pipeline, or 1 with Lua). <b>Redis memory ≈ one day's emitted × ~400 B</b> (24h TTL keyspace). <b>Avg blob</b> = a day's emitted spread over that connector's pairs.</p>
+  <table>
+    <thead><tr>
+      <th>Connector</th>
+      <th class="n">obj-store ops/sec<br><span class="small">(Opt 1/3)</span></th>
+      <th class="n">avg blob size<br><span class="small">(Opt 1, per pair)</span></th>
+      <th class="n">Redis cmds/sec<br><span class="small">(Opt 2)</span></th>
+      <th class="n">Redis mem<br><span class="small">(Opt 2, 24h)</span></th>
+    </tr></thead>
+    <tbody>
+      <tr class="named"><td><b>Outlook 365</b></td><td class="n">55.1</td><td class="n">~2.8 KB</td><td class="n">27.6–55.1</td><td class="n">~15 MB</td></tr>
+      <tr><td>Gmail</td><td class="n">20.4</td><td class="n">~1.1 KB</td><td class="n">10.2–20.4</td><td class="n">~2.7 MB</td></tr>
+      <tr><td>OneDrive</td><td class="n">13.9</td><td class="n">~0.9 KB</td><td class="n">6.9–13.9</td><td class="n">~1.3 MB</td></tr>
+      <tr><td>Google Sheets</td><td class="n">5.3</td><td class="n">~0.9 KB</td><td class="n">2.7–5.3</td><td class="n">~0.5 MB</td></tr>
+      <tr><td>Google Drive</td><td class="n">5.1</td><td class="n">~0.2 KB</td><td class="n">2.6–5.1</td><td class="n">~0.1 MB</td></tr>
+      <tr><td>Teams</td><td class="n">2.2</td><td class="n">~0.2 KB</td><td class="n">1.1–2.2</td><td class="n">&lt;0.1 MB</td></tr>
+      <tr class="named"><td><b>Salesforce</b></td><td class="n">1.3</td><td class="n">~32 KB</td><td class="n">0.65–1.3</td><td class="n">~4.4 MB</td></tr>
+      <tr><td>ServiceNow</td><td class="n">1.1</td><td class="n">~29 KB</td><td class="n">0.55–1.1</td><td class="n">~2.9 MB</td></tr>
+      <tr class="named"><td><b>Jira</b></td><td class="n">1.1</td><td class="n">~29 KB</td><td class="n">0.54–1.1</td><td class="n">~2.5 MB</td></tr>
+      <tr><td>Zendesk</td><td class="n">0.2</td><td class="n">~15 KB</td><td class="n">0.10–0.2</td><td class="n">~0.3 MB</td></tr>
+      <tr class="named"><td><b>Box</b></td><td class="n">0.09</td><td class="n">~5.5 KB</td><td class="n">0.05–0.09</td><td class="n">~0.05 MB</td></tr>
+      <tr style="font-weight:700;background:#f1f5f9"><td>TOTAL (11)</td><td class="n">~106</td><td class="n">—</td><td class="n">~53–106</td><td class="n">~30 MB</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Reading the projection</h3>
+  <ul>
+    <li><b>Total Redis footprint is trivial</b> — ~30 MB across all 11 connectors, ~53–106 cmds/sec global, ~43–86/sec peak in one region. A single small Redis fits the entire current load with vast headroom; native 24h TTL means no sweep.</li>
+    <li><b>Object store handles the steady state too</b>, but every poll is a full-blob RMW. For the high-poll / low-emit connectors (Outlook 55 ops/s, Gmail 20, OneDrive 14) that's a lot of <b>GETs+PUTs of tiny, mostly-unchanged blobs</b> — cheap per op, but the dominant cost is request count and write amplification, not bytes.</li>
+    <li><b>The two cost profiles invert by connector type:</b>
+      <ul>
+        <li><i>High-poll, low-emit</i> (Outlook, Gmail, OneDrive, Google Sheets/Drive, Teams) → <b>small blobs, high op frequency</b>. Object store's pain here is <b>op count / write amplification</b>; Redis barely notices.</li>
+        <li><i>Low-poll, high-emit-per-poll</i> (Salesforce, Jira, ServiceNow, Zendesk) → <b>fewer but larger blobs</b> (~29–32 KB avg, MB-scale on hot pairs). Object store's pain here is <b>blob size &amp; parse/stringify on the hot pairs</b>; Redis stays O(batch).</li>
+      </ul>
+    </li>
+    <li><b>Option 3 (per-instance) ≈ Option 1 here</b> because connections ≈ instances ≈ pairs (most instances poll a single object), so per-instance blobs aren't materially bigger than per-(connection,object) blobs in today's data — except for the multi-object connections where Opt 3 aggregates and grows faster.</li>
+  </ul>
+
+  <div class="callout c-blue">
+    <span class="t">Bottom line for the fork decision</span>
+    At <b>today's</b> prod load, <b>all three options are within comfortable headroom</b> — peak is ~43 polls/sec in one region. The differentiator is <b>shape, not magnitude</b>:
+    <ul style="margin:6px 0 0;">
+      <li><span class="pill pill-green">Option 1</span> is fine for the ~9,800 cool pairs (sub-100 KB blobs) and reuses existing infra — its cost is the <b>per-poll full-blob rewrite even on empty polls</b>, concentrated in the high-poll connectors (Outlook/Gmail/OneDrive) and the few hot pairs.</li>
+      <li><span class="pill pill-blue">Option 2 (Redis)</span> is the cleanest fit for the actual access pattern (mostly-empty polls + occasional bursts): bounded per-poll work, native TTL, ~30 MB total — at the cost of a new dependency.</li>
+      <li>The decision is about <b>future headroom &amp; operational shape</b>, not current capacity. If volume grows toward the design's 100K/24h-per-pair tail (4× today), object store's write amplification is the first thing to bite — Redis absorbs it flat.</li>
+    </ul>
+  </div>
+
+  <div class="footer">
+    <b>Method note:</b> all figures derived from <code>traces | where message == "poller job metric"</code> in <code>intsvc-prd-all-ne-appins</code>, 7-day window (2026-06-21→28), aggregated by <code>elementKey</code> × <code>cloud_RoleName</code>. Per-day = 7-day total ÷ 7; per-sec = per-day ÷ 86,400. Entry sizes (350 B blob entry / 400 B Redis key) and the 100K/24h outlier taken from <code>dedup-store-fork-design.html</code> for consistency.<br/>
+    <b>Caveats:</b> "polls" counts <i>completed</i> poll executions only (failed polls that don't log the metric are excluded). <code>matchedCount</code> is the emitted count <i>after</i> the look-back filter as currently configured — adding/lengthening the look-back window would raise re-emit (and thus dedup) volume above what's measured here. Region totals use median polls/min × 1,440 as an approximation.
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Redis Dedup Store, Per-Cloud-Region Load Assessment</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:1060px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:29px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 22px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:17px; color:var(--blue-d); margin:24px 0 6px;}
+  p{margin:8px 0;}
+  a{color:#1d4ed8;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.5; white-space:pre;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;}
+  .callout{border-radius:10px; padding:14px 16px; margin:16px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:7px 9px; text-align:left; vertical-align:top;}
+  td.n,th.n{text-align:right; font-variant-numeric:tabular-nums;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  .big3 td{background:#eff6ff;}
+  .warn td{background:#fef2f2;}
+  .grp td{background:#1e3a5f; color:#fff; font-size:13px;}
+  .hot td{background:#fef2f2;}
+  .tot td{background:#f1f5f9; border-top:2px solid #94a3b8;}
+  tr.hot td:first-child{border-left:3px solid #b91c1c;}
+  .pill{display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; vertical-align:middle;}
+  .pill-green{background:#d1fae5; color:var(--green);} .pill-blue{background:#dbeafe; color:#1e40af;} .pill-gray{background:#e5e7eb; color:#374151;}
+  .pill-red{background:#fee2e2;color:#b91c1c;} .pill-amber{background:#fef3c7;color:#92400e;}
+  .fig{border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;background:#fff;margin:14px 0;}
+  .figcap{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;margin-bottom:6px;}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+  ul{margin:8px 0;}
+  .kpi-row{display:flex; gap:14px; flex-wrap:wrap; margin:16px 0;}
+  .kpi{flex:1; min-width:150px; border:1px solid var(--line); border-radius:10px; padding:12px 14px; background:#fff;}
+  .kpi .v{font-size:23px; font-weight:800; color:var(--blue-d); font-variant-numeric:tabular-nums;}
+  .kpi .l{font-size:12px; color:var(--muted); margin-top:2px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Per-Cloud-Region Polling Load</h1>
+
+  <div class="callout c-blue">
+    <span class="t">The question</span>
+    If platform dedup is turned on for these connectors and backed by <b>Redis</b>, <b>what load does each cloud region place on Redis</b>, how many keys are cached, how many operations per second, and how does that depend on whether we round-trip <b>per polled record</b> or <b>per page</b>? Load is driven by <b>records polled</b> (every polled record is keyed and checked <i>before</i> filtering), not by emitted events.
+  </div>
+
+  <!-- ===================== HEADLINE ===================== -->
+  <h2>1 · Headline (all regions, 7-day average)</h2>
+  <div class="kpi-row">
+    <div class="kpi"><div class="v">~34.8M</div><div class="l">records polled / day (all connectors, 7-day avg)</div></div>
+    <div class="kpi"><div class="v">403 / s</div><div class="l">records polled / sec (per-record round-trips, for connectors with dedup on)</div></div>
+    <div class="kpi"><div class="v">59 / s</div><div class="l">polls / sec (per-page round-trips, for connectors with dedup on)</div></div>
+    <div class="kpi"><div class="v">≈1</div><div class="l">page per poll, so per-page batching ≈ per-poll</div></div>
+  </div>
+
+  <!-- ===================== PER-REGION TABLE ===================== -->
+  <h2>2 · Per-region Redis load</h2>
+  <p>Regions ranked by polled volume. <b>Keys checked/sec</b> = <code>polledObjectCount</code>/sec (the read/lookup volume). <b>Per-record RTT</b> = round-trips if the naïve model is used; <b>per-page RTT</b> = round-trips if batched. Peaks are the busiest 1-minute bucket over the 7 days.</p>
+  <table>
+    <thead><tr>
+      <th>Region</th>
+      <th class="n">polled/day<br><span class="small">= keys/day</span></th>
+      <th class="n">keys checked/s<br><span class="small">avg</span></th>
+      <th class="n"><span class="pill pill-red">per-record</span> RTT/s<br><span class="small">avg → peak</span></th>
+      <th class="n"><span class="pill pill-green">per-page</span> RTT/s<br><span class="small">avg → peak</span></th>
+      <th class="n">amplif.<br><span class="small">peak</span></th>
+    </tr></thead>
+    <tbody>
+      <tr class="big3"><td><b>az-us-prod-0</b></td><td class="n">19,449,082</td><td class="n">225</td><td class="n">225 → <b>569</b></td><td class="n">13.8 → 19.8</td><td class="n">29×</td></tr>
+      <tr class="big3"><td><b>az-eu-prod-0</b></td><td class="n">7,902,136</td><td class="n">92</td><td class="n">92 → <b>370</b></td><td class="n">21.8 → 41.8</td><td class="n">9×</td></tr>
+      <tr class="big3"><td><b>az-com-eu-prod-0</b></td><td class="n">5,782,427</td><td class="n">67</td><td class="n">67 → <b>204</b></td><td class="n">14.0 → 39.7</td><td class="n">5×</td></tr>
+      <tr><td>az-in-prod-0</td><td class="n">345,172</td><td class="n">4.0</td><td class="n">4 → 28</td><td class="n">2.2 → 2.6</td><td class="n">11×</td></tr>
+      <tr><td>az-ca-prod-0</td><td class="n">276,651</td><td class="n">3.2</td><td class="n">3 → 20</td><td class="n">1.0 → 1.3</td><td class="n">15×</td></tr>
+      <tr><td>az-jp-prod-0</td><td class="n">259,208</td><td class="n">3.0</td><td class="n">3 → 47</td><td class="n">1.6 → 2.9</td><td class="n">16×</td></tr>
+      <tr><td>az-sg-prod-0</td><td class="n">254,571</td><td class="n">2.9</td><td class="n">3 → 22</td><td class="n">1.3 → 1.8</td><td class="n">12×</td></tr>
+      <tr><td>az-uk-prod-0</td><td class="n">191,621</td><td class="n">2.2</td><td class="n">2 → 14</td><td class="n">0.9 → 1.3</td><td class="n">11×</td></tr>
+      <tr><td>az-gxp-us-prod-0</td><td class="n">159,300</td><td class="n">1.8</td><td class="n">2 → 4</td><td class="n">0.7 → 0.9</td><td class="n">4×</td></tr>
+      <tr><td>az-au-prod-0</td><td class="n">103,109</td><td class="n">1.2</td><td class="n">1 → 18</td><td class="n">1.1 → 1.6</td><td class="n">11×</td></tr>
+      <tr><td>az-gxp-eu-prod-0</td><td class="n">86,401</td><td class="n">1.0</td><td class="n">1 → 1</td><td class="n">0.3 → 0.3</td><td class="n">4×</td></tr>
+      <tr><td>az-szn-prod-0</td><td class="n">34</td><td class="n">~0</td><td class="n">~0</td><td class="n">~0</td><td class="n">1×</td></tr>
+      <tr><td>az-uan-prod-0</td><td class="n">5</td><td class="n">~0</td><td class="n">~0</td><td class="n">~0</td><td class="n">1×</td></tr>
+      <tr style="font-weight:700;background:#f1f5f9"><td>GLOBAL</td><td class="n">34,809,717</td><td class="n">403</td><td class="n">403 → ~1,200*</td><td class="n">58.8 → ~100*</td><td class="n">n/a</td></tr>
+    </tbody>
+  </table>
+  <p class="small">*Global peak is not the sum of regional peaks (they don't align in time); ~1,200/s is an upper envelope. <b>Three regions, US, EU, COM-EU, are ~95% of all Redis load;</b> the other 10 are individually &lt;5 RTT/s even naïvely.</p>
+
+  <div class="callout c-green">
+    <span class="t">Sizing takeaway</span>
+    <b>Batched per page, the busiest region (EU) peaks at ~42 round-trips/sec</b>, a single small Redis handles this without noticing. <b>Naïve per-record, US peaks at ~569 round-trips/sec</b>, still within one Redis instance's capacity (tens of thousands of ops/sec), but the real cost isn't throughput, it's <b>per-poll latency serialization</b> (next section). Either way, <b>Redis capacity is not the constraint; the round-trip <i>pattern</i> is.</b>
+  </div>
+
+  <!-- ===================== WHY PER-RECORD FAILS ===================== -->
+  <h2>3 · Why per-record round-trips fail, the single-page burst</h2>
+  <p><b>All regions combined, per connector.</b> The averages understate the problem because a single poll can pull a huge page. The step loops records <b>sequentially and awaits each</b>, so per-record round-trips are <b>added serially to that one poll's latency</b>:</p>
+  <table>
+    <thead><tr><th>Connector</th><th class="n">avg polled/poll</th><th class="n">p95</th><th class="n">p99</th><th class="n">max/poll</th><th class="n">pages/poll</th><th class="n">naïve RTT added to that poll @0.4ms</th></tr></thead>
+    <tbody>
+      <tr class="warn"><td>Google Sheets</td><td class="n">118</td><td class="n">264</td><td class="n">1,917</td><td class="n"><b>11,156</b></td><td class="n">1.0</td><td class="n"><b>~4.5 s</b> (max) · ~0.8 s (p99)</td></tr>
+      <tr class="warn"><td>Box 🟠</td><td class="n">17</td><td class="n">61</td><td class="n">432</td><td class="n">1,000</td><td class="n">1.3</td><td class="n">~0.4 s (max)</td></tr>
+      <tr><td>Zendesk</td><td class="n">17</td><td class="n">86</td><td class="n">428</td><td class="n">1,000</td><td class="n">1.3</td><td class="n">~0.4 s (max)</td></tr>
+      <tr class="warn"><td>Salesforce 🟠</td><td class="n">7.4</td><td class="n">25</td><td class="n">134</td><td class="n">1,000</td><td class="n">1.1</td><td class="n">~0.4 s (max)</td></tr>
+      <tr><td>ServiceNow</td><td class="n">5.3</td><td class="n">7</td><td class="n">140</td><td class="n">1,000</td><td class="n">1.1</td><td class="n">~0.4 s (max)</td></tr>
+      <tr><td>OneDrive</td><td class="n">4.6</td><td class="n">1</td><td class="n">12</td><td class="n">3,215</td><td class="n">1.0</td><td class="n">~1.3 s (max)</td></tr>
+      <tr class="warn"><td>Jira 🟠</td><td class="n">1.7</td><td class="n">0</td><td class="n">3</td><td class="n">1,000</td><td class="n">1.0</td><td class="n">~0.4 s (max)</td></tr>
+      <tr class="warn"><td>Outlook 365 🟠</td><td class="n">0.68</td><td class="n">1</td><td class="n">9</td><td class="n">1,000</td><td class="n">1.0</td><td class="n">~0.4 s (max)</td></tr>
+      <tr><td>Gmail</td><td class="n">0.57</td><td class="n">1</td><td class="n">10</td><td class="n">1,000</td><td class="n">1.0</td><td class="n">~0.4 s (max)</td></tr>
+    </tbody>
+  </table>
+  <p class="small">🟠 = one of the 4 requested connectors. RTT estimate assumes ~0.4 ms per Redis round-trip in-region; per-record calls are serialized by the <code>await</code> loop, so they <b>add directly to poll wall-time</b>.</p>
+
+  <!-- ===================== CONNECTOR CONTRIBUTION PER REGION ===================== -->
+  <h2>4 · What drives each region <span class="small">(polled records, 7-day totals)</span></h2>
+  <p>Which connectors generate the Redis key volume in the big three regions:</p>
+  <table>
+    <thead><tr><th>Region</th><th>Top connectors by polled records (7d)</th></tr></thead>
+    <tbody>
+      <tr><td><b>US</b></td><td>Google Sheets <b>124.7M</b> (91%) · SFDC 2.1M · OneDrive 0.36M · Jira 0.75M · Box 0.46M · ServiceNow 0.31M</td></tr>
+      <tr><td><b>EU</b></td><td>Google Sheets 24.6M (44%) · OneDrive 19.3M (35%) · Gmail 1.9M · SFDC 0.76M · ServiceNow 1.3M · Outlook 5.7M</td></tr>
+      <tr><td><b>COM-EU</b></td><td>Google Sheets 36.3M (90%) · Gmail 0.88M · Outlook 0.85M · Google Drive 0.14M · OneDrive 0.15M</td></tr>
+    </tbody>
+  </table>
+  <p class="small">Full-scan connectors (<b>Google Sheets, OneDrive</b>) dominate polled volume; the CRM/ticketing connectors (SFDC, Jira, ServiceNow) contribute far fewer polled records but denser bursts per poll. For the <b>4 named connectors</b> specifically, per-region polled load is modest (SFDC/Jira concentrated in US+EU, Box small, Outlook broad-but-thin).</p>
+
+  <!-- ===================== CONNECTOR x REGION DETAIL ===================== -->
+  <h2>5 · Connector load per region, per-poll detail</h2>
+  <p>Per <b>connector × region</b>: how many records a single poll pulls (<b>avg</b> and the tail up to <b>peak</b>) and how many <b>pages per poll</b>. This is the batch a dedup round-trip must carry. <code>polls/day</code> = 7-day count ÷ 7; <code>polled records/day</code> = polls/day × avg polled/poll (the count of keys that would be cached). Rows shaded red = avg ≥ 15 polled/poll (genuinely dense pollers). <code>peak</code> and <code>max pages</code> = single worst poll observed; <code>max=1,000</code> / <code>pages=20</code> are the page-size / page-count caps.</p>
+  <table>
+    <thead><tr>
+      <th>Region</th><th class="n">polls/day</th><th class="n">polled records<br><span class="small">/day</span></th>
+      <th class="n">avg polled<br><span class="small">/poll</span></th>
+      <th class="n">p95</th><th class="n">p99</th>
+      <th class="n">peak<br><span class="small">/poll</span></th>
+      <th class="n">avg pages<br><span class="small">/poll</span></th>
+      <th class="n">max<br><span class="small">pages</span></th>
+    </tr></thead>
+    <tbody>
+      <tr class="grp"><td colspan="9"><b>Outlook 365 🟠</b></td></tr>
+      <tr><td>eu</td><td class="n">1,099,187</td><td class="n">835,382</td><td class="n">0.76</td><td class="n">2</td><td class="n">11</td><td class="n">1,000</td><td class="n">1.01</td><td class="n">20</td></tr>
+      <tr><td>us</td><td class="n">693,736</td><td class="n">527,239</td><td class="n">0.76</td><td class="n">2</td><td class="n">10</td><td class="n">1,000</td><td class="n">1.01</td><td class="n">20</td></tr>
+      <tr><td>com-eu</td><td class="n">336,399</td><td class="n">137,924</td><td class="n">0.41</td><td class="n">1</td><td class="n">4</td><td class="n">1,000</td><td class="n">1</td><td class="n">20</td></tr>
+      <tr><td>au</td><td class="n">57,069</td><td class="n">35,383</td><td class="n">0.62</td><td class="n">1</td><td class="n">6</td><td class="n">1,000</td><td class="n">1.01</td><td class="n">20</td></tr>
+      <tr><td>in</td><td class="n">55,097</td><td class="n">50,689</td><td class="n">0.92</td><td class="n">0</td><td class="n">2</td><td class="n">1,000</td><td class="n">1.02</td><td class="n">20</td></tr>
+      <tr><td>jp</td><td class="n">48,297</td><td class="n">42,501</td><td class="n">0.88</td><td class="n">1</td><td class="n">7</td><td class="n">1,000</td><td class="n">1.01</td><td class="n">20</td></tr>
+      <tr><td>sg</td><td class="n">17,261</td><td class="n">6,732</td><td class="n">0.39</td><td class="n">1</td><td class="n">8</td><td class="n">1,000</td><td class="n">1</td><td class="n">20</td></tr>
+      <tr><td>uk</td><td class="n">15,774</td><td class="n">3,943</td><td class="n">0.25</td><td class="n">1</td><td class="n">3</td><td class="n">356</td><td class="n">1</td><td class="n">8</td></tr>
+      <tr><td>gxp-us</td><td class="n">14,976</td><td class="n">899</td><td class="n">0.06</td><td class="n">0</td><td class="n">2</td><td class="n">121</td><td class="n">1</td><td class="n">3</td></tr>
+      <tr><td>ca</td><td class="n">11,046</td><td class="n">17,011</td><td class="n">1.54</td><td class="n">1</td><td class="n">30</td><td class="n">1,000</td><td class="n">1.02</td><td class="n">20</td></tr>
+      <tr class="grp"><td colspan="9"><b>Salesforce 🟠</b></td></tr>
+      <tr><td>eu</td><td class="n">28,832</td><td class="n">106,678</td><td class="n">3.7</td><td class="n">16</td><td class="n">53</td><td class="n">1,000</td><td class="n">1.03</td><td class="n">20</td></tr>
+      <tr class="hot"><td>us</td><td class="n">16,330</td><td class="n">309,946</td><td class="n">18.98</td><td class="n">101</td><td class="n">406</td><td class="n">1,000</td><td class="n">1.3</td><td class="n">20</td></tr>
+      <tr><td>com-eu</td><td class="n">5,232</td><td class="n">994</td><td class="n">0.19</td><td class="n">0</td><td class="n">0</td><td class="n">1,000</td><td class="n">1</td><td class="n">20</td></tr>
+      <tr><td>au</td><td class="n">2,878</td><td class="n">4,403</td><td class="n">1.53</td><td class="n">11</td><td class="n">32</td><td class="n">250</td><td class="n">1</td><td class="n">6</td></tr>
+      <tr><td>in</td><td class="n">1,085</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">3</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="grp"><td colspan="9"><b>Box 🟠</b></td></tr>
+      <tr class="hot"><td>us</td><td class="n">2,109</td><td class="n">65,822</td><td class="n">31.21</td><td class="n">237</td><td class="n">582</td><td class="n">1,000</td><td class="n">1.54</td><td class="n">20</td></tr>
+      <tr><td>eu</td><td class="n">1,320</td><td class="n">106</td><td class="n">0.08</td><td class="n">0</td><td class="n">2</td><td class="n">28</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>com-eu</td><td class="n">446</td><td class="n">9</td><td class="n">0.02</td><td class="n">0</td><td class="n">0</td><td class="n">14</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>jp</td><td class="n">396</td><td class="n">4,157</td><td class="n">10.49</td><td class="n">46</td><td class="n">227</td><td class="n">1,000</td><td class="n">1.14</td><td class="n">20</td></tr>
+      <tr class="grp"><td colspan="9"><b>Jira 🟠</b></td></tr>
+      <tr><td>us</td><td class="n">27,927</td><td class="n">72,610</td><td class="n">2.6</td><td class="n">0</td><td class="n">34</td><td class="n">1,000</td><td class="n">1.05</td><td class="n">20</td></tr>
+      <tr><td>eu</td><td class="n">9,369</td><td class="n">375</td><td class="n">0.04</td><td class="n">0</td><td class="n">1</td><td class="n">233</td><td class="n">1</td><td class="n">5</td></tr>
+      <tr><td>com-eu</td><td class="n">4,112</td><td class="n">41</td><td class="n">0.01</td><td class="n">0</td><td class="n">0</td><td class="n">20</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>uk</td><td class="n">3,168</td><td class="n">348</td><td class="n">0.11</td><td class="n">0</td><td class="n">3</td><td class="n">30</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>in</td><td class="n">1,815</td><td class="n">91</td><td class="n">0.05</td><td class="n">0</td><td class="n">1</td><td class="n">36</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr class="grp"><td colspan="9"><b>Google Sheets</b></td></tr>
+      <tr class="hot"><td>com-eu</td><td class="n">78,438</td><td class="n">5,187,077</td><td class="n">66.13</td><td class="n">274</td><td class="n">1819</td><td class="n">4,999</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="hot"><td>us</td><td class="n">73,894</td><td class="n">18,244,358</td><td class="n">246.9</td><td class="n">697</td><td class="n">9763</td><td class="n">9,768</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="hot"><td>eu</td><td class="n">60,071</td><td class="n">3,508,171</td><td class="n">58.4</td><td class="n">121</td><td class="n">1516</td><td class="n">11,172</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>sg</td><td class="n">7,223</td><td class="n">18,635</td><td class="n">2.58</td><td class="n">11</td><td class="n">15</td><td class="n">31</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>in</td><td class="n">5,463</td><td class="n">5,190</td><td class="n">0.95</td><td class="n">2</td><td class="n">2</td><td class="n">2</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="hot"><td>jp</td><td class="n">1,728</td><td class="n">113,079</td><td class="n">65.45</td><td class="n">390</td><td class="n">390</td><td class="n">390</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>au</td><td class="n">1,434</td><td class="n">15,764</td><td class="n">10.99</td><td class="n">11</td><td class="n">11</td><td class="n">11</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="grp"><td colspan="9"><b>OneDrive</b></td></tr>
+      <tr><td>eu</td><td class="n">262,499</td><td class="n">2,564,618</td><td class="n">9.77</td><td class="n">1</td><td class="n">13</td><td class="n">3,215</td><td class="n">1</td><td class="n">53</td></tr>
+      <tr><td>us</td><td class="n">162,104</td><td class="n">56,737</td><td class="n">0.35</td><td class="n">1</td><td class="n">9</td><td class="n">1,213</td><td class="n">1</td><td class="n">11</td></tr>
+      <tr><td>com-eu</td><td class="n">96,300</td><td class="n">24,075</td><td class="n">0.25</td><td class="n">0</td><td class="n">6</td><td class="n">429</td><td class="n">1</td><td class="n">40</td></tr>
+      <tr><td>jp</td><td class="n">23,099</td><td class="n">2,541</td><td class="n">0.11</td><td class="n">0</td><td class="n">6</td><td class="n">74</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>sg</td><td class="n">19,366</td><td class="n">1,162</td><td class="n">0.06</td><td class="n">0</td><td class="n">1</td><td class="n">639</td><td class="n">1</td><td class="n">5</td></tr>
+      <tr><td>au</td><td class="n">13,509</td><td class="n">5,674</td><td class="n">0.42</td><td class="n">0</td><td class="n">17</td><td class="n">143</td><td class="n">1</td><td class="n">3</td></tr>
+      <tr><td>in</td><td class="n">8,178</td><td class="n">3,353</td><td class="n">0.41</td><td class="n">5</td><td class="n">6</td><td class="n">307</td><td class="n">1</td><td class="n">4</td></tr>
+      <tr class="grp"><td colspan="9"><b>Gmail</b></td></tr>
+      <tr><td>com-eu</td><td class="n">527,626</td><td class="n">126,630</td><td class="n">0.24</td><td class="n">0</td><td class="n">3</td><td class="n">1,000</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>eu</td><td class="n">188,923</td><td class="n">281,495</td><td class="n">1.49</td><td class="n">4</td><td class="n">30</td><td class="n">1,000</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>us</td><td class="n">81,173</td><td class="n">50,327</td><td class="n">0.62</td><td class="n">2</td><td class="n">10</td><td class="n">1,000</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>jp</td><td class="n">28,433</td><td class="n">36,963</td><td class="n">1.3</td><td class="n">4</td><td class="n">28</td><td class="n">1,000</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>in</td><td class="n">23,035</td><td class="n">5,759</td><td class="n">0.25</td><td class="n">0</td><td class="n">3</td><td class="n">933</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>sg</td><td class="n">12,671</td><td class="n">2,914</td><td class="n">0.23</td><td class="n">1</td><td class="n">4</td><td class="n">299</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="grp"><td colspan="9"><b>ServiceNow</b></td></tr>
+      <tr><td>eu</td><td class="n">17,529</td><td class="n">198,248</td><td class="n">11.31</td><td class="n">20</td><td class="n">327</td><td class="n">1,000</td><td class="n">1.19</td><td class="n">20</td></tr>
+      <tr><td>us</td><td class="n">17,123</td><td class="n">48,799</td><td class="n">2.85</td><td class="n">10</td><td class="n">75</td><td class="n">1,000</td><td class="n">1.03</td><td class="n">20</td></tr>
+      <tr><td>in</td><td class="n">11,515</td><td class="n">12,206</td><td class="n">1.06</td><td class="n">0</td><td class="n">2</td><td class="n">480</td><td class="n">1.02</td><td class="n">10</td></tr>
+      <tr class="grp"><td colspan="9"><b>Zendesk</b></td></tr>
+      <tr><td>jp</td><td class="n">2,880</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">2</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="hot"><td>eu</td><td class="n">2,569</td><td class="n">74,852</td><td class="n">29.14</td><td class="n">127</td><td class="n">771</td><td class="n">1,000</td><td class="n">1.49</td><td class="n">20</td></tr>
+      <tr><td>com-eu</td><td class="n">1,614</td><td class="n">20,847</td><td class="n">12.92</td><td class="n">65</td><td class="n">159</td><td class="n">1,000</td><td class="n">1.12</td><td class="n">20</td></tr>
+      <tr class="hot"><td>us</td><td class="n">1,344</td><td class="n">44,916</td><td class="n">33.42</td><td class="n">165</td><td class="n">447</td><td class="n">927</td><td class="n">1.55</td><td class="n">19</td></tr>
+      <tr class="grp"><td colspan="9"><b>Google Drive</b></td></tr>
+      <tr><td>com-eu</td><td class="n">73,482</td><td class="n">13,227</td><td class="n">0.18</td><td class="n">0</td><td class="n">2</td><td class="n">50</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>eu</td><td class="n">71,315</td><td class="n">82,012</td><td class="n">1.15</td><td class="n">2</td><td class="n">50</td><td class="n">50</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>us</td><td class="n">39,511</td><td class="n">79,417</td><td class="n">2.01</td><td class="n">7</td><td class="n">50</td><td class="n">50</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>jp</td><td class="n">15,407</td><td class="n">14,637</td><td class="n">0.95</td><td class="n">2</td><td class="n">50</td><td class="n">50</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>sg</td><td class="n">8,928</td><td class="n">35,889</td><td class="n">4.02</td><td class="n">28</td><td class="n">50</td><td class="n">50</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr class="grp"><td colspan="9"><b>Teams</b></td></tr>
+      <tr><td>eu</td><td class="n">44,004</td><td class="n">1,320</td><td class="n">0.03</td><td class="n">0</td><td class="n">0</td><td class="n">50</td><td class="n">1</td><td class="n">2</td></tr>
+      <tr><td>us</td><td class="n">31,248</td><td class="n">312</td><td class="n">0.01</td><td class="n">0</td><td class="n">0</td><td class="n">11</td><td class="n">1</td><td class="n">1</td></tr>
+      <tr><td>jp</td><td class="n">12,197</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">0</td><td class="n">7</td><td class="n">1</td><td class="n">1</td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-amber">
+    <span class="t">Reading the per-poll detail</span>
+    <ul style="margin:6px 0 0;">
+      <li><b>Named connectors are light per poll almost everywhere</b>, Outlook/Jira average &lt;1 polled/poll in every region; their <code>peak=1,000</code> is just the occasional page-cap hit. The exceptions: <b>Salesforce US</b> (avg ~19, p99 ~406) and <b>Box US</b> (avg ~31, p99 ~582) run dense, and <b>Box/SFDC page up to 20×</b> per poll (avg pages 1.3–1.5).</li>
+      <li><b>Google Sheets is the outlier in every region it runs</b>, <b>US avg ~247 polled/poll, p99 ~9,763, peak 9,768</b> (EU peak 11,172), always in a <b>single page</b>. That single-page burst is the whole per-record-vs-batched argument (§3).</li>
+      <li><b>Pages/poll ≈ 1 for nearly everything</b>, only the paginating connectors (Outlook, SFDC, Box, ServiceNow, Zendesk, Jira) ever exceed 1, capped at 20. OneDrive is the exception with rare deep pagination (max 53 pages in EU). So per-page batching ≈ per-poll batching in practice.</li>
+    </ul>
+  </div>
+
+  <!-- ===================== MEMORY & KEYS ===================== -->
+  <h2>6 · Keys cached &amp; memory</h2>
+  <p>Each polled record maps to one dedup key written with a native TTL (<code>SET&nbsp;NX&nbsp;EX</code>). Retention only has to cover <b>one polling interval plus the configured look-back window</b>, so the TTL is short, on average <b>~3-4 h</b>. Live keys at any moment ≈ <b>distinct keys created in that trailing retention window</b>.</p>
+  <table>
+    <thead><tr><th>Region</th><th class="n">polled / retention window*<br><span class="small">(~4 h)</span></th><th class="n">memory upper bound<br><span class="small">(all-distinct × 400 B)</span></th><th>realistic</th></tr></thead>
+    <tbody>
+      <tr class="big3"><td>US</td><td class="n">~3.2M</td><td class="n">~1.3 GB</td><td>far lower: 91% is Sheets re-reading the same rows; <code>SET NX</code> collapses those to one key each, so the live set &asymp; distinct rows under watch (low millions of keys, ~hundreds of MB)</td></tr>
+      <tr class="big3"><td>EU</td><td class="n">~1.3M</td><td class="n">~0.5 GB</td><td>lower: Sheets+OneDrive re-reads collapse; incremental connectors contribute ~real arrival rate</td></tr>
+      <tr class="big3"><td>COM-EU</td><td class="n">~1.0M</td><td class="n">~0.4 GB</td><td>lower: 90% Sheets re-reads collapse</td></tr>
+      <tr><td>each of the other 10</td><td class="n">&lt;0.06M</td><td class="n">&lt;0.03 GB</td><td>negligible</td></tr>
+    </tbody>
+  </table>
+  <p class="small">*Retention window &asymp; polling interval + look-back (~4 h assumed here); polled-in-window &asymp; polled/day &times; 4/24. Global upper bound &asymp; <b>~2.3 GB</b> (all regions).</p>
+  <div class="callout c-amber">
+    <span class="t">Memory is not the binding constraint, but measure it before committing</span>
+    The <b>upper bound (~2.3 GB global)</b> assumes every polled record in the retention window is a distinct key, which is <b>wrong for full-scan connectors</b>: Sheets/OneDrive re-read the same rows/files each poll, and <code>SET&nbsp;NX</code> keeps each key just once until its TTL, so the live set is closer to <b>distinct objects under watch</b> (much smaller). The firm, measurable numbers here are <b>ops/sec and per-poll latency</b>, not memory. <b>Recommendation:</b> shadow-count distinct keys before finalizing capacity, or accept the small upper bound (a single modest node) and shorten retention / cap for the Sheets tail if needed. Bandwidth is trivial in all cases (peak ~570 keys/s &times; ~80 B &asymp; 45 KB/s).
+  </div>
+
+  <h3>10&times; growth-headroom estimate</h3>
+  <p>A gross Redis-sizing check for the busiest slice: <b>top 3 regions (US, EU, COM-EU) &times; top 10 connectors</b>, totalling <b>records polled per day</b>, then a <b>10&times; multiplier</b> for growth headroom. At ~400 B per key this bounds the footprint if every polled record in a day were a distinct cached key.</p>
+  <table>
+    <thead><tr><th>Region</th><th class="n">polled records / day<br><span class="small">(top-10 connectors)</span></th><th class="n">&times; 10 = keys</th><th class="n">Redis size @ 400 B/key</th></tr></thead>
+    <tbody>
+      <tr class="big3"><td>US</td><td class="n">19,501,853</td><td class="n">195.0M</td><td class="n">~78 GB</td></tr>
+      <tr class="big3"><td>EU</td><td class="n">7,652,619</td><td class="n">76.5M</td><td class="n">~31 GB</td></tr>
+      <tr class="big3"><td>COM-EU</td><td class="n">5,515,273</td><td class="n">55.2M</td><td class="n">~22 GB</td></tr>
+      <tr class="tot"><td><b>Total (top-3 &times; top-10)</b></td><td class="n"><b>32,671,141</b></td><td class="n"><b>326.7M</b></td><td class="n"><b>~131 GB</b></td></tr>
+    </tbody>
+  </table>
+  <p class="small"><b>Gross day-basis upper bound.</b> It assumes a full day of retention and every polled record distinct, so it deliberately overstates the real live set: the TTL is only ~3-4 h and <code>SET NX</code> collapses full-scan re-reads (Sheets/OneDrive) to one key each. Treat ~131 GB as the "10&times; worst case for capacity planning"; the retention-window figures above are the expected footprint.</p>
+
+  <!-- ===================== IMPLICATIONS FOR PR3 ===================== -->
+  <h2>7 · Implications for the Redis implementation (PR3)</h2>
+  <ul>
+    <li><b>Batch per page, mandatory.</b> The store must not round-trip inside each per-record <code>checkAndRecord</code>. Buffer the page's keys and issue <b>one <code>MGET</code> + one pipelined <code>SET&nbsp;NX&nbsp;EX</code></b> (2 RTT) or a single <b>Lua <code>EVAL</code></b> (1 RTT) per page. This turns US's naïve ~569 RTT/s peak into ~20 RTT/s, and a 11k-row Sheets poll from ~4.5 s into a few ms.
+      <ul><li>Mechanically: since <code>UnbatchStep</code> calls per record, either (a) add a page-level batch entry point the store can hook, or (b) have the Redis store buffer per-record calls and flush the batch when the page completes. The interface's <code>load</code>/<code>flush</code> seam already exists per poll; a per-page flush is the missing piece.</li></ul>
+    </li>
+    <li><b>Tolerate a large single page.</b> Sheets can hand a single page of <b>11k+ keys</b>. <code>MGET</code>/pipeline of that size is fine, but size the client buffers and pick <code>EVAL</code> or chunked pipelines to avoid a multi-MB single command where it matters.</li>
+    <li><b>Native TTL for retention.</b> Set a per-key TTL sized to <b>one polling interval + the look-back window</b> (typically <b>~3-4 h</b>), so keys expire on their own with no sweep, unlike the object-store prune. <code>SET NX</code> gives "already-seen" in the same op (returns whether it set), so read+record can be one atomic step.</li>
+    <li><b>Provision per region, size to the big three.</b> US/EU/COM-EU carry ~95% of load; the other 10 regions are trivial. A single small Redis per region is ample even at naïve peak.</li>
+    <li><b>Reassess after look-back ships.</b> These numbers are with look-back <b>off</b> (flags default false). Look-back deliberately <b>re-scans a window each poll</b>, which <i>raises</i> <code>polledObjectCount</code> (more re-emitted records to check), so today's figures are a <b>floor</b>. The good news: re-scanned records are already-seen, so they're <code>MGET</code> hits that don't grow memory (existing keys), only ops.</li>
+  </ul>
+
+  <div class="callout c-blue">
+    <span class="t">Bottom line</span>
+    Redis is comfortably sized for this load in every region <b>provided the store batches per page</b>. The measured constraint is not Redis throughput or memory, it's the <b>per-record round-trip pattern</b> the current <code>UnbatchStep</code> wiring would impose on a naïve implementation, which turns a big single page (Google Sheets, up to 11k records) into seconds of serial latency. Batch per page → the busiest region peaks at ~40 RTT/s and the worst poll costs a few ms.
+  </div>
+
+  <div class="footer">
+    <b>Method:</b> <code>traces | where message == "poller job metric"</code> in <code>intsvc-prd-all-ne-appins</code> (all 13 regional clusters report here; region = <code>cloud_RoleName</code>), 7-day window, aggregated by region and <code>elementKey</code>. Per-day = 7-day total ÷ 7; per-sec = ÷ 86,400. Peak = max over 1-minute buckets. Key size 400 B and RTT 0.4 ms are planning assumptions. Mechanism (per-record <code>checkAndRecord</code>, store lifecycle) read from gallup#2814: <code>Unbatch.ts</code>, <code>Dedup.ts</code>, <code>DedupStore.ts</code>, <code>DeduplicationService.ts</code>, <code>AsyncPollingExecutor.ts</code>.<br/>
+    <b>Caveats:</b> counts are <i>completed</i> polls only; <code>polledObjectCount</code> is pre-dedup, pre-eventFilter (the true dedup input, minus whatever the pre-dedup date <code>FilterStep</code> removes, an upper bound); look-back is off in the measured window so figures are a floor; memory upper bound overstates full-scan connectors due to <code>SET NX</code> re-read collapse.
+  </div>
+
+</div>
+</body>
+</html>

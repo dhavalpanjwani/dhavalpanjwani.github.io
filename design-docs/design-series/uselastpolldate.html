@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Polling Watermark — useLastPollDate vs lastPollDataDate</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --orange:#c2410c; --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:960px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:30px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 28px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:16px; color:var(--blue-d); margin:22px 0 6px;}
+  p{margin:8px 0;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px; line-height:1.5;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;} pre .n{color:#fca5a5;} pre .kw{color:#c4b5fd;}
+  .callout{border-radius:10px; padding:14px 16px; margin:16px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);}
+  ol.steps{counter-reset:s; list-style:none; padding-left:0; margin:14px 0;}
+  ol.steps>li{position:relative; padding:10px 14px 10px 52px; margin:10px 0; background:#fff;
+       border:1px solid var(--line); border-radius:10px;}
+  ol.steps>li::before{counter-increment:s; content:counter(s); position:absolute; left:14px; top:12px;
+       width:26px; height:26px; background:var(--blue); color:#fff; border-radius:50%;
+       display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px;}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:14px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:9px 12px; text-align:left; vertical-align:top;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  .pill{display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:700;}
+  .pill-b{background:#dbeafe; color:#1e40af;} .pill-g{background:#d1fae5; color:var(--green);}
+  .pill-o{background:#fed7aa; color:var(--orange);} .pill-a{background:#fef3c7; color:var(--amber);}
+  .flow{display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:14px 0; font-size:13px;}
+  .node{background:#fff; border:2px solid var(--blue-d); border-radius:8px; padding:8px 12px; font-weight:600;}
+  .node.start{background:#fed7aa; border-color:var(--orange);}
+  .node.dec{background:#fef3c7; border-color:var(--amber);}
+  .node.b{background:#dbeafe; border-color:#1e40af;}
+  .node.g{background:#a7f3d0; border-color:var(--green);}
+  .arr{color:var(--muted); font-weight:700;}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Polling Watermark — <code>useLastPollDate</code> vs <code>lastPollDataDate</code></h1>
+  <p class="sub">How a time-based poller decides the "since" timestamp for each poll · gallup <code>app/src/lib/model/ScheduledJob.ts</code> (<code>calcLastPollDate</code>, <code>shouldUseLastPollDataDate</code>) &amp; <code>polling/service/JobSvc.ts</code></p>
+
+  <div class="callout c-blue">
+    <span class="t">TL;DR</span>
+    Each poller keeps <b>two</b> candidate cursors per object: <code>lastPollDate</code> (the <b>wall-clock time</b> the last poll ran) and <code>lastPollDataDate</code> (the <b>max record timestamp actually seen</b>). The connector flag <code>useLastPollDate</code> chooses which one drives the next query:
+    <span class="pill pill-b">useLastPollDate: true</span> → wall-clock <code>lastPollDate</code>; <span class="pill pill-g">useLastPollDate: false (default)</span> → data-derived <code>lastPollDataDate</code>. Outlook uses <b>true</b> — which is exactly why it needs a Look-back Window.
+  </div>
+
+  <h2>1 · The two watermarks (stored per object)</h2>
+  <p>Each object's poller state (<code>pollerStates[objectName]</code>) carries both candidates, persisted after every poll:</p>
+<pre><span class="c">// pollerStates entry for object "Message"</span>
+{
+  <span class="k">"createdDate"</span>:        <span class="s">"2026-06-11T09:00:00.000Z"</span>,  <span class="c">// when the poller job was created</span>
+  <span class="k">"lastPollDate"</span>:       <span class="s">"2026-06-11T10:05:00.000Z"</span>,  <span class="c">// wall-clock time the last poll ran</span>
+  <span class="k">"lastPollDataDate"</span>:   <span class="s">"2026-06-11T10:04:50.000Z"</span>,  <span class="c">// max record date seen in the last poll</span>
+  <span class="k">"lastPollNextPageToken"</span>: <span class="s">""</span>,                       <span class="c">// pagination cursor (if mid-page)</span>
+  <span class="k">"lastPollErrorDate"</span>:   <span class="s">"1970-01-01T00:00:00.000Z"</span>   <span class="c">// MIN_DATE = no error</span>
+}</pre>
+  <table>
+    <tr><th>Watermark</th><th>Meaning</th><th>How it's set at poll end <span class="small">(JobSvc.ts)</span></th></tr>
+    <tr><td><code>lastPollDate</code></td><td>"I polled at time T" — a <b>clock-based</b> cursor.</td><td>= the poll's <code>currentDate</code> (now), <i>unless</i> a next-page token exists or an error/retain flag is set → then it's <b>kept unchanged</b>.</td></tr>
+    <tr><td><code>lastPollDataDate</code></td><td>"the newest record I actually saw had timestamp D" — a <b>data-driven</b> cursor.</td><td>= <code>max(dataDates)</code> across the polled records (<code>Metric.ts</code>), reconciled with the stored value via <code>calcLastPollDataDate</code> (see below &amp; §4 edge cases).</td></tr>
+  </table>
+
+  <h3>How <code>lastPollDataDate</code> is computed</h3>
+  <p>It is the <b>maximum of the configured date field</b> (the <code>updatedDateField</code> / <code>createdDateField</code> from <code>datesConfiguration</code>) across <b>every record on every page</b> of a completed poll, then folded with the previously stored value:</p>
+<pre><span class="c">// one completed poll traverses ALL pages into a single trace</span>
+thisPollMax = maxDate(dataDates(trace))            <span class="c">// max date over every record, every page</span>
+stored      = Math.max(previousStored, thisPollMax) <span class="c">// calcLastPollDataDate → monotonic</span></pre>
+  <ul>
+    <li><b>All pages, one run.</b> A poll that runs to completion processes every page into one trace, so the max spans the whole page set — not just the last page.</li>
+    <li><b>Monotonic (never regresses).</b> Because it's <code>max(stored, thisPoll)</code>, a poll that returns <b>0 records</b> keeps the stored value rather than dropping to MIN_DATE.</li>
+    <li><b>Pagination / halt hold.</b> If a poll can't finish in one execution (object-count limit or a halt → a <code>lastPollNextPageToken</code> is persisted), the watermark is <b>held at the stored value</b> until the poll resumes and completes — it never commits a half-paginated snapshot. <span class="small">(When the run is cut short specifically by the object-count limit, it instead advances to the poll's <code>currentDate</code> to deliberately skip the remaining objects.)</span></li>
+    <li><b>Configured field, not "any" timestamp.</b> The dates come from <code>datesConfiguration</code> (for Outlook, <code>lastModifiedDateTime</code> / <code>createdDateTime</code>), parsed via the date format/zone config.</li>
+  </ul>
+
+  <h2>2 · Which one is used — <code>calcLastPollDate</code></h2>
+  <p>Every poll, the query "since" timestamp is computed by this decision (simplified from <code>ScheduledJob.ts</code>):</p>
+<pre><span class="kw">function</span> calcLastPollDate(job) {
+  <span class="kw">const</span> { createdDate, lastPollDate, lastPollDataDate } = job.pollerStates[objectName];
+
+  <span class="c">// 1) Never polled yet → only look back to job creation</span>
+  <span class="kw">if</span> (lastPollDate === MIN_DATE) <span class="kw">return</span> createdDate ?? lastPollDate;
+
+  <span class="c">// 2) Configured for data-date AND we have one → use the data-derived cursor</span>
+  <span class="kw">if</span> (shouldUseLastPollDataDate(job) &amp;&amp; lastPollDataDate &amp;&amp; lastPollDataDate !== MIN_DATE)
+    <span class="kw">return</span> lastPollDataDate;
+
+  <span class="c">// 3) Otherwise → the wall-clock cursor</span>
+  <span class="kw">return</span> lastPollDate;
+}
+
+<span class="kw">function</span> shouldUseLastPollDataDate(job) {
+  <span class="kw">const</span> useLastPollDate = job.pollerConfigurations[objectName].useLastPollDate ?? <span class="n">false</span>;
+  <span class="c">// data-date only for event/trigger pollers, and only when useLastPollDate is false</span>
+  <span class="kw">return</span> eventConfiguration !== undefined &amp;&amp; !useLastPollDate;
+}</pre>
+  <div class="flow">
+    <span class="node start">compute cursor</span><span class="arr">→</span>
+    <span class="node dec">never polled?</span><span class="arr">yes →</span><span class="node">createdDate</span>
+    <span class="arr">no →</span><span class="node dec">!useLastPollDate &amp; dataDate set?</span>
+    <span class="arr">yes →</span><span class="node g">lastPollDataDate</span>
+    <span class="arr">no →</span><span class="node b">lastPollDate</span>
+  </div>
+
+  <h2>3 · The <code>useLastPollDate</code> flag</h2>
+  <table>
+    <tr><th>Value</th><th>Cursor used</th><th>Behaviour</th><th>Best for</th></tr>
+    <tr>
+      <td><span class="pill pill-b">true</span></td>
+      <td><code>lastPollDate</code> (wall-clock)</td>
+      <td>"Give me everything since the time I last polled." Simple, monotonic by our clock.</td>
+      <td>Vendors whose record timestamps are unreliable / not comparable; APIs where you trust query-by-now.</td>
+    </tr>
+    <tr>
+      <td><span class="pill pill-g">false</span> (default)</td>
+      <td><code>lastPollDataDate</code> (data-derived)</td>
+      <td>"Give me everything since the newest record I actually saw." Tracks the vendor's own timestamps.</td>
+      <td>Vendors with trustworthy record dates; self-correcting against clock skew.</td>
+    </tr>
+  </table>
+  <p class="small">Note: even with <code>useLastPollDate: false</code>, the poller falls back to <code>lastPollDate</code> for non-event pollers, on the first poll, and whenever <code>lastPollDataDate</code> isn't populated.</p>
+
+  <h2>4 · Edge cases (why <code>lastPollDataDate</code> isn't just "max date")</h2>
+  <ol class="steps">
+    <li><b>First poll</b> (<code>lastPollDate === MIN_DATE</code>) → cursor = <code>createdDate</code>, so the poller only emits events created <i>after</i> the job was set up (no historical flood).</li>
+    <li><b>Pagination in progress</b> (<code>lastPollNextPageToken</code> set) → <b>both</b> watermarks are held unchanged, so the cursor doesn't advance until all pages of this cycle are drained.</li>
+    <li><b>Error / retain flag</b> → <code>lastPollDate</code> is kept (not advanced to now), to avoid skipping over events that a failed poll didn't return.</li>
+    <li><b>Object-count limit hit</b> (poll not "finished") → <code>lastPollDataDate</code> is advanced to the poll's <code>currentDate</code> to deliberately skip the remaining objects this cycle.</li>
+    <li><b>No records found</b> → the END metric's <code>lastPollDataDate</code> is 0/MIN_DATE; the code keeps the <b>higher</b> of stored-vs-metric so the cursor never <i>regresses</i> to MIN_DATE.</li>
+  </ol>
+
+  <h2>5 · Why it matters for the Look-back Window</h2>
+  <div class="callout c-amber">
+    <span class="t">Clock-based cursor + replication lag = the ENGCE-58349 problem</span>
+    With <span class="pill pill-b">useLastPollDate: true</span> (Outlook), the cursor advances to "now" each poll regardless of what the vendor has actually made visible. If a record replicates late at the vendor, its timestamp is already behind the advanced wall-clock cursor → it's missed forever. A data-date cursor (<code>false</code>) is partly self-correcting (it won't advance past the newest record seen), but still misses a late record whose date is older than the max already observed.
+  </div>
+  <div class="callout c-green">
+    <span class="t">Where look-back plugs in</span>
+    The Look-back Window subtracts <code>lookBackTime</code> from <b>whatever <code>calcLastPollDate</code> returns</b> — so it protects both modes. That's why the effective watermark is best derived once, in/around <code>calcLastPollDate</code>, and then fed to both the vendor query and the local <code>filterByUpdatedDate</code> step. Re-scanned overlap is then suppressed by dedup.
+  </div>
+
+  <h2>6 · Quick reference</h2>
+  <table>
+    <tr><th>Field</th><th>Where</th><th>Role</th></tr>
+    <tr><td><code>useLastPollDate</code></td><td>poller config (proto field 15 / <code>PollingConfigDto</code>)</td><td>chooses wall-clock vs data-date cursor</td></tr>
+    <tr><td><code>lastPollDate</code></td><td>pollerState (persisted)</td><td>wall-clock cursor candidate</td></tr>
+    <tr><td><code>lastPollDataDate</code></td><td>pollerState (persisted)</td><td>data-derived cursor candidate (max record date)</td></tr>
+    <tr><td><code>createdDate</code></td><td>pollerState</td><td>first-poll lower bound</td></tr>
+    <tr><td><code>useLastPollDataDateDiscovery</code></td><td>poller config</td><td>separate flag governing data-date discovery on the reset/discovery URL (not the per-poll cursor)</td></tr>
+  </table>
+
+  <div class="footer">
+    <b>Code references</b><br/>
+    Cursor decision · gallup <code>app/src/lib/model/ScheduledJob.ts</code> → <code>calcLastPollDate</code>, <code>shouldUseLastPollDataDate</code>, <code>calcLastPollDataDate</code><br/>
+    Watermark update at poll end · <code>app/src/lib/polling/service/JobSvc.ts</code> · data-date = <code>maxDate(dataDates)</code> in <code>engine/common/Metric.ts</code><br/>
+    Used to build the query · <code>engine/common/Configuration.ts</code> (<code>createPollingEngineExecuteConfiguration</code>) · contract flag <code>useLastPollDate</code> in <code>api/periodic/v2alpha6/standard_resource.proto</code>
+  </div>
+
+</div>
+</body>
+</html>

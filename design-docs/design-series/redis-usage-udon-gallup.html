@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Redis Usage — Udon &amp; Gallup (dedicated-instance analysis)</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:1000px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:29px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 22px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:17px; color:var(--blue-d); margin:24px 0 6px;}
+  p{margin:8px 0;}
+  a{color:#1d4ed8;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.5; white-space:pre;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;}
+  blockquote{margin:12px 0; padding:10px 16px; border-left:4px solid #94a3b8; background:#f1f5f9;
+      color:#334155; border-radius:0 8px 8px 0;}
+  .callout{border-radius:10px; padding:14px 16px; margin:16px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:top;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  .rec{background:#f0fdf4;}
+  .pill{display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; vertical-align:middle;}
+  .pill-green{background:#d1fae5; color:var(--green);} .pill-blue{background:#dbeafe; color:#1e40af;} .pill-gray{background:#e5e7eb; color:#374151;}
+  .pill-red{background:#fee2e2; color:var(--red);} .pill-amber{background:#fef3c7; color:var(--amber);}
+  .fig{border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;background:#fff;margin:14px 0;}
+  .figcap{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;margin-bottom:6px;}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+  ul{margin:8px 0;}
+  .mono{font-family:"SF Mono",Menlo,Consolas,monospace; font-size:12px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Redis Usage — Udon &amp; Gallup</h1>
+  <p class="sub">Internal review draft · current-state analysis to decide whether Gallup needs a <b>dedicated Redis</b> · companion to <code>dedup-store-fork-design.html</code> (ENGCE-58349, Option 2).</p>
+
+  <div class="callout c-blue">
+    <span class="t">Why this doc</span>
+    The dedup-store fork's <b>Option 2</b> proposes a keyed store (Redis) for platform dedup. Today <b>Gallup points at Udon's Redis</b> (<code>Cfg.ts</code> literally comments <i>"Redis configuration (shared with Udon)"</i>). Before adding a high-churn dedup workload, we need to understand what each service uses Redis for today, and whether co-tenancy with Udon is safe. This inventories both, then makes a recommendation.
+  </div>
+
+  <!-- ========================= TL;DR ========================= -->
+  <h2>TL;DR</h2>
+  <ul>
+    <li><b>Udon</b> is a heavy, multi-purpose Redis user — L1/L2 caching, distributed locks, <b>2FA &amp; login state</b>, API-response caching, <b>OAuth/provisioning state</b>, and pub/sub cache-invalidation. Runs an <b>HA Redis cluster</b> (<code>udon-redis-ha-haproxy</code>), Java/Jedis, one logical instance shared across all Udon modules.</li>
+    <li><b>Gallup</b> is a near-trivial Redis user — <b>exactly one use case</b>: caching Udon connection configs (<code>connection-configs:{connectionId}</code>, 1h TTL), behind a circuit breaker that no-ops to a null cache if Redis is down. Node <code>redis@4.6.13</code>.</li>
+    <li><b>They share the same instance today.</b> Both receive the same <code>REDIS_HOST</code> / <code>REDIS_PASSWORD</code> from the deploy pipeline.</li>
+    <li><b>Recommendation:</b> shared Redis is fine for what Gallup does <i>today</i>. But <b>if Option 2 (Redis dedup) is chosen, it must land on a dedicated Gallup Redis</b> — the dedup workload is high-churn and Udon's shared cluster holds security-critical 2FA/lock/OAuth state <i>and</i> is flushed on every Udon deploy.</li>
+  </ul>
+
+  <!-- ========================= TOPOLOGY ========================= -->
+  <h2>1 · Current topology</h2>
+  <div class="fig">
+  <div class="figcap">Today — Gallup &amp; Udon share one Redis (HA cluster)</div>
+  <svg viewBox="0 0 900 250" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+    <defs>
+      <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker>
+    </defs>
+    <!-- Udon -->
+    <rect x="20" y="24" width="240" height="150" rx="10" fill="#eff6ff" stroke="#1e40af"/>
+    <text x="140" y="46" text-anchor="middle" font-size="13" fill="#1e3a5f" font-weight="700">Udon (Java / Jedis)</text>
+    <text x="36" y="70" font-size="11" fill="#334155">• L1/L2 caches (elements, tokens…)</text>
+    <text x="36" y="90" font-size="11" fill="#b91c1c">• 2FA codes / login throttling</text>
+    <text x="36" y="110" font-size="11" fill="#334155">• distributed locks</text>
+    <text x="36" y="130" font-size="11" fill="#b91c1c">• OAuth / provisioning state</text>
+    <text x="36" y="150" font-size="11" fill="#334155">• API-response cache · pub/sub</text>
+    <!-- Gallup -->
+    <rect x="20" y="186" width="240" height="48" rx="10" fill="#ecfdf5" stroke="#047857"/>
+    <text x="140" y="206" text-anchor="middle" font-size="13" fill="#065f46" font-weight="700">Gallup (Node / redis@4)</text>
+    <text x="140" y="224" text-anchor="middle" font-size="11" fill="#065f46">• connection-config cache (1 use case)</text>
+    <!-- Redis -->
+    <rect x="560" y="80" width="300" height="92" rx="10" fill="#1e293b" stroke="#0f172a"/>
+    <text x="710" y="106" text-anchor="middle" font-size="13" fill="#fff" font-weight="700">udon-redis-ha (HAProxy)</text>
+    <text x="710" y="128" text-anchor="middle" font-size="11" fill="#22c55e" font-family="monospace">udon-redis-ha-haproxy…:6379</text>
+    <text x="710" y="150" text-anchor="middle" font-size="11" fill="#e2e8f0">shared · prefix-only isolation</text>
+    <!-- arrows -->
+    <line x1="260" y1="100" x2="558" y2="112" stroke="#475569" stroke-width="2" marker-end="url(#ar)"/>
+    <line x1="260" y1="210" x2="558" y2="148" stroke="#047857" stroke-width="2" marker-end="url(#ar)"/>
+    <text x="410" y="96" text-anchor="middle" font-size="10.5" fill="#475569">REDIS_HOST / REDIS_PASSWORD</text>
+    <text x="410" y="196" text-anchor="middle" font-size="10.5" fill="#047857">same REDIS_HOST / REDIS_PASSWORD</text>
+  </svg>
+  </div>
+  <p class="small">Isolation today is <b>logical only</b> — Gallup namespaces keys with a <code>gallup:</code> / <code>connection-configs:</code> prefix on the same instance Udon uses. No separate ACL, DB index, or instance.</p>
+
+  <!-- ========================= UDON ========================= -->
+  <h2>2 · Udon — Redis use cases</h2>
+  <p>Library: <b>Jedis 3.9.0</b> (Java). Config props <code>redis.hostname.0</code> / <code>REDIS_HOSTNAME_0</code> etc. (<code>ServiceConstants.java:1149-1155</code>). Prod endpoint <code>udon-redis-ha-haproxy.cloudelements.svc.cluster.local:6379</code> (HA cluster, password-auth). Core impl <code>RedisCache.java</code> (2069 lines — CRC32 pool sharding, transactions, pub/sub) plus a separate <code>ExecutorRedisClient.java</code>.</p>
+  <table>
+    <thead><tr><th style="width:4%"></th><th>Use case</th><th>Where</th><th>Data / keys</th><th>TTL</th><th>Sensitivity</th></tr></thead>
+    <tbody>
+      <tr><td>A</td><td><b>L1/L2 multi-level cache</b> (~10 caches: elements, instances, tokens, security access, configs, tags, mappings)</td><td class="mono">AbstractBaseCache.java, framework/cache/*</td><td>element metadata, ElementInstance, InstanceToken, security data</td><td>4h–4d</td><td>Med <span class="small">(acct-key encrypted)</span></td></tr>
+      <tr><td>B</td><td><b>Distributed locks</b></td><td class="mono">LockingUtil.java</td><td><code>{token-digest}-lock</code>, SET NX + EXPIRE</td><td>120s</td><td>Low</td></tr>
+      <tr><td>C</td><td><b>2FA / login state</b></td><td class="mono">TwoFactorAuthenticationUtil.java</td><td>login-attempt counts, 2FA codes, phone numbers</td><td>5min–3d</td><td><b>HIGH</b> <span class="small">(PII/codes)</span></td></tr>
+      <tr><td>D</td><td><b>API-response cache</b> w/ LRU + quota</td><td class="mono">RedisCache.java:1485-1626</td><td>cached API responses, LRU sorted-sets, size hashes</td><td>per-entry</td><td>Med <span class="small">(encrypted)</span></td></tr>
+      <tr><td>E</td><td><b>Instance validation / heartbeat</b></td><td class="mono">InstanceValidatorUtils.java</td><td><code>validate-instance-{id}</code> + cancel flags</td><td>600s</td><td>Low</td></tr>
+      <tr><td>F</td><td><b>OAuth / provisioning state</b></td><td class="mono">InstanceServiceImpl.java, AbstractElementService.java</td><td>OAuth state, transient multi-step provisioning data</td><td>varies</td><td><b>HIGH</b></td></tr>
+      <tr><td>G</td><td><b>Executor-level locks</b></td><td class="mono">executor/.../Locker.java</td><td>boolean flags</td><td>—</td><td>Low</td></tr>
+      <tr><td>—</td><td><b>Pub/sub cache invalidation</b></td><td class="mono">Level2CacheSubscriber.java</td><td>keyspace expired/evicted events (<code>notify-keyspace-events=xeEg</code>)</td><td>—</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-amber">
+    <span class="t">Operational note — Udon flushes Redis on deploy</span>
+    Udon ships a <b>pre-install/upgrade Helm hook</b> (<code>job-redis-cache-bust.yml</code> → <code>bust-redis-cache.sh</code>) that flushes Redis keys for a clean state. Safe for Udon's caches (rebuildable), but it would <b>erase any co-tenant dedup state</b> living on the same instance.
+  </div>
+
+  <!-- ========================= GALLUP ========================= -->
+  <h2>3 · Gallup — Redis use cases</h2>
+  <p>Library: <b><code>redis@4.6.13</code></b> (Node). Config <code>Cfg.ts:47-54, 597-605</code>, env <code>REDIS_*</code>, prod port <code>6380</code> + TLS. Stack: <code>RedisClient</code> → <code>RedisCacheManager</code> (JSON + <code>gallup:</code> prefix) → <code>CircuitBreakerCacheManager</code> → falls back to <code>NullCacheManager</code> when disabled or tripped.</p>
+  <table>
+    <thead><tr><th style="width:4%"></th><th>Use case</th><th>Where</th><th>Data / keys</th><th>TTL</th><th>Sensitivity</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td><b>Connection-config cache</b> <span class="small">(the only Redis use)</span></td><td class="mono">UdonClient.ts:306-338 (write <code>cacheObject</code>; read on event/webhook processing)</td><td><code>connection-configs:{connectionId}</code> → connection configuration object</td><td>1h <span class="small">(CACHE_DEFAULT_TTL_SECONDS)</span></td><td>Moderate <span class="small">(auth-mechanism config, not raw secrets)</span></td></tr>
+      <tr><td>2</td><td><b>Invalidation endpoint</b> (same keyspace)</td><td class="mono">InvalidateCacheHttpHandler.ts — POST /v1/cache/connections/invalidate/{id}, S2S JWT</td><td>DEL of the above key</td><td>—</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <div class="callout c-green">
+    <span class="t">Verified — what Gallup does NOT use Redis for</span>
+    No distributed locks, queues, pub/sub, sessions, rate-limiting, or dedup/<code>hookState</code>. The <code>AuthHttpClientImpl.ts:54</code> <code>cache.set</code> is a local in-process <code>NodeCache</code>, <b>not</b> Redis. Gallup's <code>hookState</code> lives in the <b>encrypted object-store blob</b>, not Redis. Gallup's entire Redis footprint is one rebuildable, 1h-TTL, circuit-breakered config cache.
+  </div>
+
+  <!-- ========================= DECISION ========================= -->
+  <h2>4 · Does a dedicated Redis for Gallup make sense?</h2>
+
+  <h3><span class="pill pill-green">For</span> a dedicated Gallup Redis</h3>
+  <ul>
+    <li><b>Blast-radius isolation.</b> A Gallup bug or load spike — e.g. dedup doing thousands of ops/poll on the 100K-entry heavy tail (see dedup-store-fork Option 2 §4) — today lands on the <b>same cluster holding Udon's 2FA codes, login throttling, locks, and OAuth/provisioning state</b> (use cases B, C, F). Those are correctness- and security-critical for Udon.</li>
+    <li><b>Workload mismatch.</b> Dedup is high-churn, short-TTL, high-fan-out — exactly what pressures memory &amp; eviction. Udon's L1 caches rely on keyspace-notify pub/sub; a high-write co-tenant can trigger evictions that <b>silently break Udon's cache-invalidation</b>.</li>
+    <li><b>Independent capacity &amp; TTL policy.</b> A dedicated instance lets Gallup size memory and <code>maxmemory-policy</code> for dedup (native per-key 24h TTL; possibly Redis <b>7.4+</b> for <code>HEXPIRE</code>) without coordinating Udon's HA config.</li>
+    <li><b>Deploy-flush hazard.</b> Udon's <code>bust-redis-cache</code> hook flushes the instance on every deploy. On a shared instance that would <b>wipe Gallup dedup keys → a burst of duplicate emits</b>. Tolerable for a rebuildable config cache; <b>not</b> safe for dedup.</li>
+    <li><b>Security surface.</b> Co-tenancy means one password/ACL compromise spans Gallup's dedup keys <i>and</i> Udon's HIGH-sensitivity 2FA/OAuth state.</li>
+  </ul>
+
+  <h3><span class="pill pill-red">Against</span> (keep sharing)</h3>
+  <ul>
+    <li><b>Gallup's footprint today is negligible</b> — one 1h-TTL config cache, circuit-breakered, degrades gracefully to no-cache. Does not justify new infra <i>on its own</i>.</li>
+    <li><b>New infra cost</b> — the dedup design itself flags Option 2's downside as "a new infra dependency to provision/operate." A dedicated Redis is exactly that, multiplied per ring/region.</li>
+    <li>If dedup lands on <b>Option 1 (object-store blob)</b> instead of Redis, the dedicated-Redis question largely disappears.</li>
+  </ul>
+
+  <h3>At a glance</h3>
+  <table>
+    <thead><tr><th style="width:26%">Dimension</th><th>Shared (today)</th><th class="rec">Dedicated Gallup Redis</th></tr></thead>
+    <tbody>
+      <tr><td><b>Blast radius</b></td><td>Gallup spike hits Udon 2FA/locks/OAuth</td><td class="rec">Isolated</td></tr>
+      <tr><td><b>Eviction interplay</b></td><td>Can break Udon's keyspace-notify invalidation</td><td class="rec">Independent <code>maxmemory-policy</code></td></tr>
+      <tr><td><b>Deploy flush</b></td><td>Udon deploy wipes Gallup keys</td><td class="rec">Unaffected</td></tr>
+      <tr><td><b>Security</b></td><td>Shared password/ACL across sensitivities</td><td class="rec">Scoped to dedup data</td></tr>
+      <tr><td><b>Infra cost / ops</b></td><td class="rec">None new</td><td>New instance per ring/region</td></tr>
+      <tr><td><b>Justified for config-cache only?</b></td><td class="rec">Yes — leave as-is</td><td>Overkill</td></tr>
+      <tr><td><b>Justified if Redis dedup (Opt 2)?</b></td><td>No — coupling is unsafe</td><td class="rec">Yes</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ========================= RECOMMENDATION ========================= -->
+  <h2>5 · Recommendation</h2>
+  <div class="callout c-amber">
+    <span class="t">Decision</span>
+    <ul style="margin:6px 0 0;">
+      <li><b>For Gallup's current usage (config caching): keep the shared Redis.</b> One rebuildable 1h-TTL cache does not warrant new infra.</li>
+      <li><b>If the dedup-store fork picks Option 2 (Redis): put it on a dedicated Gallup Redis, not Udon's.</b> The driver is not raw size — it's that dedup is high-churn and Udon's instance holds security-critical 2FA/lock/OAuth state <i>and</i> is flushed on every Udon deploy. That couples Gallup's data-correctness (no duplicate emits) to Udon's operational and capacity decisions.</li>
+      <li><b>Feed this back into <code>dedup-store-fork-design.html</code> Option 2.</b> Under "Cost — a new infra dependency," clarify it means a <b>dedicated</b> instance, and add the <b>deploy-flush hazard</b> as a concrete correctness reason, not just isolation hygiene.</li>
+    </ul>
+  </div>
+
+  <div class="footer">
+    <b>Related internal drafts:</b>
+    <code>dedup-store-fork-design.html</code> (the storage fork this analysis feeds — Option 2 = Redis).<br/>
+    Evidence drawn from the Udon (Jedis) and Gallup (<code>redis@4.6.13</code>) codebases; file:line references inline above.
+  </div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Design Alternatives</title>
+<style>
+  :root{
+    --ink:#0f172a; --muted:#475569; --line:#e2e8f0;
+    --blue:#3b82f6; --blue-d:#1e3a5f; --blue-bg:#eff6ff;
+    --green:#047857; --green-bg:#ecfdf5;
+    --red:#b91c1c; --red-bg:#fef2f2;
+    --amber:#b45309; --amber-bg:#fffbeb;
+    --violet:#7c3aed; --violet-bg:#f5f3ff;
+    --code-bg:#1e293b; --code-grn:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       color:var(--ink); line-height:1.55; margin:0; background:#f8fafc;}
+  .wrap{max-width:1000px; margin:0 auto; padding:40px 28px 80px;}
+  h1{font-size:29px; color:var(--blue-d); margin:0 0 4px;}
+  .sub{color:var(--muted); font-size:15px; margin:0 0 22px;}
+  h2{font-size:21px; color:#1e40af; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line);}
+  h3{font-size:17px; color:var(--blue-d); margin:24px 0 6px;}
+  p{margin:8px 0;}
+  a{color:#1d4ed8;}
+  code{font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:13px;
+       background:#eef2f7; padding:1px 5px; border-radius:4px; color:#0b3a66;}
+  pre{background:var(--code-bg); color:#e2e8f0; border-radius:10px; padding:16px 18px; overflow:auto;
+      font-family:"SF Mono",Menlo,Consolas,"Courier New",monospace; font-size:12.5px; line-height:1.5; white-space:pre;}
+  pre .k{color:#7dd3fc;} pre .s{color:var(--code-grn);} pre .c{color:#94a3b8;}
+  blockquote{margin:12px 0; padding:10px 16px; border-left:4px solid #94a3b8; background:#f1f5f9;
+      color:#334155; border-radius:0 8px 8px 0;}
+  .callout{border-radius:10px; padding:14px 16px; margin:16px 0; border:1px solid;}
+  .c-blue{background:var(--blue-bg); border-color:#bfdbfe;}
+  .c-green{background:var(--green-bg); border-color:#a7f3d0;}
+  .c-red{background:var(--red-bg); border-color:#fecaca;}
+  .c-amber{background:var(--amber-bg); border-color:#fde68a;}
+  .c-violet{background:var(--violet-bg); border-color:#ddd6fe;}
+  .callout .t{font-weight:700; display:block; margin-bottom:3px;}
+  .c-blue .t{color:#1e40af;} .c-green .t{color:var(--green);} .c-red .t{color:var(--red);} .c-amber .t{color:var(--amber);} .c-violet .t{color:var(--violet);}
+  table{border-collapse:collapse; width:100%; margin:14px 0; font-size:13px; background:#fff;}
+  th,td{border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:top;}
+  th{background:#f1f5f9; color:var(--blue-d);}
+  .rec{background:#f0fdf4;}
+  .pill{display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; vertical-align:middle;}
+  .pill-green{background:#d1fae5; color:var(--green);} .pill-blue{background:#dbeafe; color:#1e40af;} .pill-gray{background:#e5e7eb; color:#374151;}
+  .fig{border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;background:#fff;margin:14px 0;}
+  .figcap{font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#64748b;margin-bottom:6px;}
+  .footer{margin-top:40px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13px;}
+  .small{font-size:13px; color:var(--muted);}
+  ul{margin:8px 0;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Design Alternatives</h1>
+  <p class="sub">Three options, each with a diagram, followed by a worked example and a comparison.</p>
+
+  <!-- ========================= OPTION 1 (Redis) ========================= -->
+  <h2>1 · <span class="pill pill-green">Option 1</span> Keyed store <span class="small">(e.g. Redis)</span></h2>
+
+  <div class="fig">
+  <div class="figcap">Option 1: keyed store (per event, O(1))</div>
+  <svg viewBox="0 0 900 256" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+    <defs>
+      <marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker>
+      <marker id="a2d" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#64748b"/></marker>
+    </defs>
+    <rect x="8" y="68" width="132" height="48" rx="9" fill="#fed7aa" stroke="#c2410c"/>
+    <text x="74" y="96" text-anchor="middle" font-size="12.5" fill="#7c2d12">Poll, per event</text>
+    <rect x="178" y="68" width="140" height="48" rx="9" fill="#3b82f6" stroke="#1e3a5f"/>
+    <text x="248" y="96" text-anchor="middle" font-size="12.5" fill="#fff">GET dedupKey</text>
+    <polygon points="430,56 506,92 430,128 354,92" fill="#fef3c7" stroke="#b45309"/>
+    <text x="430" y="89" text-anchor="middle" font-size="11.5" fill="#92400e">present &amp;</text>
+    <text x="430" y="104" text-anchor="middle" font-size="11.5" fill="#92400e">match?</text>
+    <rect x="566" y="46" width="216" height="48" rx="9" fill="#a7f3d0" stroke="#047857"/>
+    <text x="674" y="74" text-anchor="middle" font-size="12.5" fill="#065f46">Emit + SET key (24h TTL)</text>
+    <rect x="566" y="120" width="152" height="46" rx="9" fill="#dbeafe" stroke="#1e40af" stroke-dasharray="5 4"/>
+    <text x="642" y="148" text-anchor="middle" font-size="12.5" fill="#1e40af">Drop duplicate</text>
+    <line x1="140" y1="92" x2="176" y2="92" stroke="#475569" stroke-width="2" marker-end="url(#a2)"/>
+    <line x1="318" y1="92" x2="352" y2="92" stroke="#475569" stroke-width="2" marker-end="url(#a2)"/>
+    <path d="M482,74 L566,70" fill="none" stroke="#047857" stroke-width="2" marker-end="url(#a2)"/>
+    <text x="524" y="56" text-anchor="middle" font-size="11" fill="#047857">no / changed</text>
+    <path d="M470,112 L566,140" fill="none" stroke="#1e40af" stroke-width="2" marker-end="url(#a2)"/>
+    <text x="512" y="134" text-anchor="middle" font-size="11" fill="#1e40af">yes</text>
+    <path d="M674,46 C674,20 248,20 248,66" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a2d)"/>
+    <text x="462" y="30" text-anchor="middle" font-size="11" fill="#64748b">next event, O(1) per key</text>
+    <rect x="150" y="186" width="632" height="58" rx="9" fill="#1e293b" stroke="#0f172a"/>
+    <text x="166" y="208" font-size="11" fill="#22c55e" font-family="monospace">dedup:&lt;connectionId&gt;:Message:EMAIL_RECEIVED:&lt;id&gt;_&lt;createdDateTime&gt;  &#8594;  ts   (native TTL)</text>
+    <text x="166" y="230" font-size="11" fill="#e2e8f0" font-family="monospace">dedup:&lt;connectionId&gt;:Message:UPDATED:&lt;id&gt;_&lt;lastModifiedDateTime&gt;    &#8594;  ts   (native TTL)  · each key independent</text>
+  </svg>
+  </div>
+
+  <p>A dedicated <b>keyed store</b> (e.g. Redis). Each dedup key is its own entry (<code>key &rarr; {timestamp}</code>) with a <b>native per-key TTL</b> (sized to one poll interval plus the look-back window). Per event: an O(1) <code>GET</code>; if the key is unseen (or its stored value differs) then <b>emit + <code>SET</code></b> with TTL, else <b>drop</b>.</p>
+  <ul>
+    <li><b>Scales with event rate.</b> Every key is independent and O(1); there is no per-scope blob that grows with volume, and nothing is held resident in memory.</li>
+    <li><b>Native eviction.</b> Per-key TTL expires entries automatically, so retention needs no application-side prune.</li>
+    <li><b>Already in the stack.</b> Redis is present today with a low single-digit-millisecond p99, well below object-store blob latency.</li>
+    <li><b>Human-readable flat keys.</b> <code>connectionId</code>, <code>objectName</code>, <code>eventType</code> and the dedup fields are concatenated into each key (not hashed), so lookups are independent, there is no cross-object contention, and a dropped key is legible in logs.</li>
+  </ul>
+
+  <h3>Avoiding a round trip per event</h3>
+  <p>Thousands of events can arrive in one poll (across pages), so a naive "one <code>GET</code> plus one <code>SET</code> per event" would be thousands of round-trips. The <code>DedupStore</code> interface takes a <b>batch of keys per page</b>, so the Redis implementation collapses that to one or two round-trips. Three techniques:</p>
+  <div class="callout c-violet">
+    <span class="t">Prerequisite: how the per-page batch is actually produced</span>
+    The one-to-two round-trips below assume Redis receives <b>one batch of keys per page</b>. Today it does <b>not</b>: <code>DedupStep</code> runs <b>inside <code>UnbatchStep</code>, per event</b>, so <code>checkAndRecord</code> is fed <b>one key at a time</b>, which is N round-trips, not one or two. Producing a real per-page batch requires splitting <code>UnbatchStep</code> into <b>Phase&nbsp;1, a Dedup&nbsp;Barrier, and Phase&nbsp;2</b> (a single batched dedup between the per-event passes), governed by a new <code>useHydrationBeforeDedup</code> contract flag. <b>That restructure is the in-depth of this option</b>; see the companion doc <a href="dedup-unbatch-two-phase-design.html"><b>Unbatch Two-Phase Dedup</b></a>. Without it, this option's round-trip numbers do not hold.
+  </div>
+  <table>
+    <thead><tr><th>Technique</th><th>How</th><th>Round trips per page</th><th>TTL</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td><b>MGET + pipelined SET…EX</b></td><td><code>MGET</code> all keys (read), then pipeline <code>SET key ts EX</code> for the new ones (write)</td><td><b>2</b></td><td>native per-key</td><td>simplest; <code>MSET</code> cannot set a TTL, so use a pipeline</td></tr>
+      <tr class="rec"><td><b>SET NX EX, pipelined</b></td><td>pipeline <code>SET key ts NX EX</code> for every key; the reply per key is the verdict</td><td><b>1</b></td><td>native per-key</td><td>fuses check and record atomically; removes the read entirely</td></tr>
+      <tr><td><b>Lua / EVAL</b></td><td>one server-side script reads all keys and conditionally writes the new ones (<code>SET…EX</code>), returning which were new</td><td><b>1</b></td><td>native per-key</td><td>atomic; also hardens the rare stuck-reschedule overlap</td></tr>
+    </tbody>
+  </table>
+<pre><span class="c">// checkAndRecord for Redis (SET NX EX): one pipeline, one round trip regardless of N</span>
+<span class="k">const</span> pipe = redis.multi();                           <span class="c">// build a pipeline, no network yet</span>
+keys.forEach((k) =&gt; pipe.set(k, ts, { NX: <span class="k">true</span>, EX: retentionSeconds }));
+<span class="k">const</span> replies = <span class="k">await</span> pipe.run();                <span class="c">// flush once, ONE round trip</span>
+<span class="c">// reply per key, in order: "OK" = new (emit), null = already seen (drop)</span>
+<span class="k">const</span> seen = keys.filter((_, i) =&gt; replies[i] == <span class="k">null</span>);</pre>
+  <p class="small">Dedup runs <b>before</b> <code>EventFilter</code> (on post-hydrate, <b>pre-filter</b> events), so the barrier's batch can be as large as the page itself, which is exactly why the per-page batching above matters. Scoping the check to the look-back overlap window (only events at or before the previous watermark can be cross-poll duplicates) keeps the batch small in practice.</p>
+
+  <!-- ========================= OPTION 2 (plaintext HookStateV2) ========================= -->
+  <h2>2 · <span class="pill pill-blue">Option 2</span> Platform plaintext <code>HookStateV2</code> blob</h2>
+
+  <p>A platform-owned variant of the encrypted-blob approach (Option 3): keep the object-store blob model, but (a) move it <b>out of the connector hook into the platform</b>, (b) store it <b>plaintext</b>, and (c) split it <b>per (connection, object)</b>.</p>
+
+  <div class="fig">
+  <div class="figcap">Option 2: per-poll flow and blob</div>
+  <svg viewBox="0 0 900 248" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+    <defs>
+      <marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker>
+      <marker id="a3d" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#64748b"/></marker>
+    </defs>
+    <rect x="8" y="34" width="142" height="44" rx="9" fill="#fed7aa" stroke="#c2410c"/>
+    <text x="79" y="61" text-anchor="middle" font-size="12.5" fill="#7c2d12">Poll (conn, object)</text>
+    <rect x="190" y="28" width="168" height="56" rx="9" fill="#3b82f6" stroke="#1e3a5f"/>
+    <text x="274" y="51" text-anchor="middle" font-size="12" fill="#fff">GET …_….json</text>
+    <text x="274" y="68" text-anchor="middle" font-size="11" fill="#dbeafe">(plaintext)</text>
+    <rect x="398" y="28" width="160" height="56" rx="9" fill="#3b82f6" stroke="#1e3a5f"/>
+    <text x="478" y="51" text-anchor="middle" font-size="12" fill="#fff">scan blob +</text>
+    <text x="478" y="68" text-anchor="middle" font-size="12" fill="#fff">prune &gt;24h</text>
+    <rect x="598" y="28" width="176" height="56" rx="9" fill="#3b82f6" stroke="#1e3a5f"/>
+    <text x="686" y="51" text-anchor="middle" font-size="12" fill="#fff">add {insertedAt}</text>
+    <text x="686" y="68" text-anchor="middle" font-size="12" fill="#fff">+ write back</text>
+    <line x1="150" y1="56" x2="188" y2="56" stroke="#475569" stroke-width="2" marker-end="url(#a3)"/>
+    <line x1="358" y1="56" x2="396" y2="56" stroke="#475569" stroke-width="2" marker-end="url(#a3)"/>
+    <line x1="558" y1="56" x2="596" y2="56" stroke="#475569" stroke-width="2" marker-end="url(#a3)"/>
+    <path d="M686,28 C686,6 274,6 274,26" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a3d)"/>
+    <text x="480" y="14" text-anchor="middle" font-size="11" fill="#64748b">sequential per (connection, object), one engine message at a time</text>
+    <rect x="190" y="116" width="584" height="124" rx="9" fill="#ecfdf5" stroke="#047857"/>
+    <text x="206" y="138" font-size="12" fill="#065f46" font-family="monospace">v2/connectionId_objectName.json   (plaintext, last 24h)</text>
+    <text x="206" y="162" font-size="12" fill="#065f46" font-family="monospace">processedRecords:</text>
+    <text x="222" y="182" font-size="11.5" fill="#065f46" font-family="monospace">EMAIL_RECEIVED: { "&lt;id&gt;_&lt;createdDateTime&gt;": { insertedAt } }</text>
+    <text x="222" y="202" font-size="11.5" fill="#065f46" font-family="monospace">UPDATED:        { "&lt;id&gt;_&lt;lastModifiedDateTime&gt;_&lt;folderId&gt;": { insertedAt } }</text>
+    <text x="222" y="222" font-size="11.5" fill="#065f46" font-family="monospace">default:        { "&lt;id&gt;_&lt;lastModifiedDateTime&gt;": { insertedAt } }</text>
+  </svg>
+  </div>
+
+  <h3>Data model</h3>
+<pre>// HookStateV2: one PLAINTEXT blob per (connection, object):  connectionId_objectName.json
+//   inner key = dedupReferenceFields values concatenated with "_"  (id included when defined)
+//   value     = { insertedAt }   → entry pruned when insertedAt is older than 24h
+{
+  <span class="k">"processedRecords"</span>: {
+    <span class="k">"EMAIL_RECEIVED"</span>: {                               <span class="c">// fields: ["id","createdDateTime"]</span>
+      <span class="s">"AAMkAGI2id1_2026-06-11T10:00:00Z"</span>: { <span class="k">"insertedAt"</span>: <span class="s">"2026-06-11T10:05:12Z"</span> }
+    },
+    <span class="k">"UPDATED"</span>: {                                      <span class="c">// ["id","lastModifiedDateTime","folderId"]</span>
+      <span class="s">"AAMkAGI2id2_2026-06-11T10:04:11Z_Inbox"</span>: { <span class="k">"insertedAt"</span>: <span class="s">"2026-06-11T10:09:30Z"</span> }
+    },
+    <span class="k">"default"</span>: {                                      <span class="c">// ["id","lastModifiedDateTime"]</span>
+      <span class="s">"AAMkAGI2id9_2026-06-11T10:03:47Z"</span>: { <span class="k">"insertedAt"</span>: <span class="s">"2026-06-11T10:08:01Z"</span> }
+    }
+  }
+}</pre>
+
+  <h3>Key rules</h3>
+  <ul>
+    <li><b>Inner key</b> = the connector's <code>dedupReferenceFields</code> values for that event type, <b>concatenated with <code>_</code></b> (so <code>id</code> is part of the key whenever it is a declared field). Kept <b>human-readable for debuggability</b> (deliberately not hashed).</li>
+    <li><b>Nesting</b> = <code>processedRecords &rarr; eventType &rarr; key &rarr; { insertedAt }</code>; a <code>default</code> bucket covers event types without an explicit entry (mirrors <code>dedupReferenceFields</code> scoping). Key existence means "already seen".</li>
+    <li><b>Value</b> = <code>{ insertedAt }</code> (the time we recorded it). On each write, entries whose <code>insertedAt</code> is older than <b>24h</b> are pruned.</li>
+    <li><b>Blob name</b> = <code>connectionId_objectName.json</code> (gallup already stores <code>connectionId</code>), in the existing hook-state bucket under a <code>v2/</code> prefix.</li>
+  </ul>
+
+  <h3>Concurrency: sequential by design (verified)</h3>
+  <p>The scheduler keeps <b>one scheduled job per instance</b> (<code>hierarchyToken</code>) and serializes its executions via a status state machine, <code>heartbeatDate</code>, and conditional writes; a job processes one <code>currentObjectName</code> at a time and reschedules itself after completion. So <b>per-(connection, object) writes are sequential, with no normal-case overlap</b>, and no optimistic locking is required.</p>
+
+  <!-- ========================= OPTION 3 (encrypted per-instance) ========================= -->
+  <h2>3 · <span class="pill pill-gray">Option 3</span> Encrypted per-instance blob <span class="small">(reuse <code>HookStateDao</code>)</span></h2>
+
+  <div class="fig">
+  <div class="figcap">Option 3: encrypted per-instance blob (read-modify-write)</div>
+  <svg viewBox="0 0 900 232" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+    <defs>
+      <marker id="a1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#475569"/></marker>
+      <marker id="a1d" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#64748b"/></marker>
+    </defs>
+    <rect x="8" y="34" width="120" height="44" rx="9" fill="#fed7aa" stroke="#c2410c"/>
+    <text x="68" y="61" text-anchor="middle" font-size="12.5" fill="#7c2d12">Poll cycle</text>
+    <rect x="168" y="28" width="150" height="56" rx="9" fill="#3b82f6" stroke="#1e3a5f"/>
+    <text x="243" y="51" text-anchor="middle" font-size="12" fill="#fff">GET + decrypt</text>
+    <text x="243" y="68" text-anchor="middle" font-size="12" fill="#fff">WHOLE blob</text>
+    <rect x="358" y="28" width="150" height="56" rx="9" fill="#3b82f6" stroke="#1e3a5f"/>
+    <text x="433" y="51" text-anchor="middle" font-size="12" fill="#fff">scan ALL objects</text>
+    <text x="433" y="68" text-anchor="middle" font-size="12" fill="#fff">in-memory</text>
+    <rect x="548" y="28" width="176" height="56" rx="9" fill="#3b82f6" stroke="#1e3a5f"/>
+    <text x="636" y="51" text-anchor="middle" font-size="12" fill="#fff">re-encrypt + rewrite</text>
+    <text x="636" y="68" text-anchor="middle" font-size="12" fill="#fff">WHOLE blob</text>
+    <line x1="128" y1="56" x2="166" y2="56" stroke="#475569" stroke-width="2" marker-end="url(#a1)"/>
+    <line x1="318" y1="56" x2="356" y2="56" stroke="#475569" stroke-width="2" marker-end="url(#a1)"/>
+    <line x1="508" y1="56" x2="546" y2="56" stroke="#475569" stroke-width="2" marker-end="url(#a1)"/>
+    <path d="M636,28 C636,6 243,6 243,26" fill="none" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#a1d)"/>
+    <text x="440" y="14" text-anchor="middle" font-size="11" fill="#64748b">read-modify-write every poll, O(N) scan over all objects</text>
+    <rect x="168" y="116" width="556" height="100" rx="9" fill="#1e293b" stroke="#0f172a"/>
+    <text x="184" y="140" font-size="12" fill="#22c55e" font-family="monospace">instanceId.json   (encrypted, AES; AAD = instanceId)</text>
+    <text x="184" y="164" font-size="12" fill="#e2e8f0" font-family="monospace">{ "Message": { … }, "Calendar": { … } }   all objects, one blob</text>
+    <text x="184" y="196" font-size="11.5" fill="#94a3b8" font-family="-apple-system,Segoe UI,Roboto,sans-serif">blob grows with the connection's total event volume, so the rewrite is expensive each poll</text>
+  </svg>
+  </div>
+
+  <p>The <b>existing</b> approach: reuse <code>GenericHookStateDao</code> as-is. One JSON blob <b>per element instance</b>, AES-encrypted at rest (AAD = <code>instanceId</code>), holding the dedup state for <b>all</b> of that connection's objects. Every poll: <code>GET</code>, decrypt, <code>JSON.parse</code> the whole map, scan it in memory, re-encrypt, <code>PUT</code> the whole blob back.</p>
+  <ul>
+    <li><b>Lowest effort.</b> The DAO, bucket, and encryption already exist; nothing new to build or operate.</li>
+    <li><b>Scaling concern.</b> It is a read-modify-write of one <i>growing</i> blob each poll, and matching is an in-memory scan, so <b>O(N)</b> over all objects and keys. At high event volume the blob grows and the per-poll rewrite and scan get expensive.</li>
+    <li><b>Encrypted at rest</b> (good for data sensitivity) but correspondingly <b>hard to inspect and debug</b>.</li>
+  </ul>
+
+  <!-- ========================= WORKED EXAMPLE: real per-region peak ========================= -->
+  <h2>4 · Worked example: real per-region peak load</h2>
+  <p>These figures come from 7-day production telemetry (see <code>dedup-redis-load-by-region.html</code>). Dedup load is driven by <b>records polled</b> (every polled record is keyed and checked before filtering), not by emitted events. Globally that is <b>~34.8M records polled/day</b>; three regions (US, EU, COM-EU) carry <b>~95%</b> of it. In practice a poll fetches <b>~1 page</b>, so per-page batching is effectively per-poll.</p>
+
+  <h3>Per-region peak (busiest 1-minute bucket over 7 days)</h3>
+  <table>
+    <thead><tr><th>Region</th><th>polled records / day</th><th>keys checked/s (avg)</th><th>per-record round-trips/s (avg &rarr; peak)</th><th>per-page round-trips/s (avg &rarr; peak)</th></tr></thead>
+    <tbody>
+      <tr><td><b>US</b></td><td>19.4M</td><td>225</td><td>225 &rarr; <b>569</b></td><td class="rec">13.8 &rarr; <b>19.8</b></td></tr>
+      <tr><td><b>EU</b></td><td>7.9M</td><td>92</td><td>92 &rarr; 370</td><td class="rec">21.8 &rarr; <b>41.8</b></td></tr>
+      <tr><td><b>COM-EU</b></td><td>5.8M</td><td>67</td><td>67 &rarr; 204</td><td class="rec">14.0 &rarr; 39.7</td></tr>
+      <tr><td>other 10 regions</td><td>&lt;0.35M each</td><td>&lt;4</td><td>&lt;47</td><td class="rec">&lt;3</td></tr>
+    </tbody>
+  </table>
+  <p class="small">Batched per page, the busiest region (EU) peaks at <b>~42 round-trips/sec</b>, which a single small Redis is idle at. Naive per-record, US peaks at <b>~569 round-trips/sec</b>, still within one instance, but the real cost is per-poll latency serialization (next).</p>
+
+  <h3>The stress case: a single large page</h3>
+  <p>Averages understate the problem, because one poll can pull a huge page and the per-event step <b>awaits each record serially</b>. The densest single polls observed:</p>
+  <table>
+    <thead><tr><th>Connector (region)</th><th>avg polled/poll</th><th>p99</th><th>max in one poll</th><th>naive per-record latency added to that poll (@0.4 ms)</th></tr></thead>
+    <tbody>
+      <tr class="rec"><td><b>Google Sheets</b> (EU / US)</td><td>~58 / ~247</td><td>1,516 / 9,763</td><td><b>11,172</b> / 9,768 (single page)</td><td><b>~4.5 s</b> (max), ~0.8 s (p99)</td></tr>
+      <tr><td>Box (US)</td><td>~31</td><td>582</td><td>1,000</td><td>~0.4 s (max)</td></tr>
+      <tr><td>Salesforce (US)</td><td>~19</td><td>406</td><td>1,000</td><td>~0.4 s (max)</td></tr>
+      <tr><td>Outlook 365 (broad, thin)</td><td>&lt;1</td><td>~10</td><td>1,000 (page cap)</td><td>~0.4 s (max)</td></tr>
+    </tbody>
+  </table>
+  <p class="small">A single 11k-row Google Sheets page is the whole per-record-versus-batched argument: naive per-record adds <b>~4.5 s of serial Redis latency</b> to that one poll; batched, it is <b>one round trip of a few ms</b>.</p>
+
+  <h3>The three options on that worst poll (~11k-record single page)</h3>
+  <table>
+    <thead><tr><th></th><th class="rec"><span class="pill pill-green">Option 1</span> Redis (batched)</th><th><span class="pill pill-blue">Option 2</span> Object-store blob</th><th><span class="pill pill-gray">Option 3</span> Encrypted per-instance</th></tr></thead>
+    <tbody>
+      <tr><td><b>Per-poll work</b></td><td class="rec">one pipeline of ~11k <code>SET NX EX</code></td><td>GET + parse + scan + stringify + PUT the whole (connection, object) blob</td><td>same, plus decrypt and re-encrypt</td></tr>
+      <tr><td><b>Round trips</b></td><td class="rec"><b>1</b> (or 2 with MGET)</td><td>1 GET + 1 PUT of the whole blob</td><td>1 GET + 1 PUT of the whole (larger) blob</td></tr>
+      <tr><td><b>Latency added</b></td><td class="rec">~few ms</td><td>parse/stringify of the blob blocks the event loop</td><td>parse/stringify plus crypto, worst</td></tr>
+      <tr><td><b>Write amplification</b></td><td class="rec">none (writes only the page's keys)</td><td>rewrites the whole blob to add the new keys</td><td>same, plus re-encrypt</td></tr>
+      <tr><td><b>Memory</b></td><td class="rec"><code>SET NX</code> collapses re-reads to one key per row</td><td>whole blob resident per poll</td><td>whole instance blob resident per poll</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Keys cached and memory (Redis)</h3>
+  <ul>
+    <li><b>TTL is short.</b> Retention only has to cover one poll interval plus the look-back window, so the per-key TTL is <b>~3 to 4 h</b>, not 24 h; keys expire on their own with no sweep.</li>
+    <li><b>Live keys &asymp; distinct keys in the trailing retention window.</b> The realistic per-region footprint is modest: US is <b>~ hundreds of MB</b> (91% of US volume is Google Sheets re-reading the same rows, and <code>SET NX</code> collapses those to one key each); EU and COM-EU are smaller.</li>
+    <li><b>Upper bounds.</b> Assuming every polled record in the window were distinct: <b>~2.3 GB global</b>. A gross 10&times; growth-headroom check (top-3 regions &times; top-10 connectors, full-day retention, all-distinct) is <b>~131 GB</b>, a deliberate worst case for capacity planning, well above the expected live set.</li>
+  </ul>
+
+  <div class="callout c-amber">
+    <span class="t">Takeaway</span>
+    Batched <b>Redis handles the real peak trivially</b>: the busiest region peaks at ~42 round-trips/sec per page, and the worst single poll (an 11k-row Google Sheets page) costs a few ms. The binding constraint is <b>the round-trip pattern, not Redis capacity or memory</b>: a naive per-record implementation turns that 11k page into ~4.5 s of serial latency. The object-store blob is the costly path on a busy (connection, object) because it rewrites the whole blob every poll (write amplification) and blocks the event loop on parse/stringify. Measure distinct-key counts before finalizing capacity.
+  </div>
+
+  <!-- ========================= AT A GLANCE ========================= -->
+  <h2>5 · The three options at a glance</h2>
+  <table>
+    <thead><tr>
+      <th style="width:18%"></th>
+      <th class="rec"><span class="pill pill-green">Option 1</span> Keyed store (Redis)</th>
+      <th><span class="pill pill-blue">Option 2</span> Plaintext <code>HookStateV2</code></th>
+      <th><span class="pill pill-gray">Option 3</span> Encrypted per-instance blob</th>
+    </tr></thead>
+    <tbody>
+      <tr><td><b>Mechanism</b></td><td class="rec">Per-key entries (<code>key &rarr; {ts, ttl}</code>), indexed lookups</td><td>One <b>plaintext</b> JSON blob, read-modify-write each poll</td><td>One JSON blob, encrypted, read-modify-write each poll</td></tr>
+      <tr><td><b>Granularity</b></td><td class="rec">per dedup key</td><td>per <b>(connection, object)</b>, so smaller blobs</td><td>per <b>instance</b> (all objects in one blob)</td></tr>
+      <tr><td><b>Blob / key name</b></td><td class="rec"><code>connectionId:object:eventType:fields</code> (human-readable)</td><td><code>connectionId_objectName.json</code></td><td><code>instanceId</code></td></tr>
+      <tr><td><b>Encryption</b></td><td class="rec">Needs at-rest / in-transit story</td><td><b>None app-layer</b>, relies on object-store SSE + access controls</td><td>App-layer AES at rest (AAD = instanceId)</td></tr>
+      <tr><td><b>Lookup cost</b></td><td class="rec">O(1) <code>GET</code></td><td>In-memory scan of a <b>small</b> blob</td><td>In-memory scan of whole blob</td></tr>
+      <tr><td><b>Write cost</b></td><td class="rec">Per-key <code>SET</code></td><td>Rewrite the (small) blob, <b>no encrypt cost</b></td><td>Re-encrypt + rewrite whole blob</td></tr>
+      <tr><td><b>Retention / TTL</b></td><td class="rec">Native per-key TTL (~interval + look-back)</td><td><code>insertedAt</code>-based sweep on write</td><td>Manual sweep</td></tr>
+      <tr><td><b>Concurrency</b></td><td class="rec">Per-key atomic</td><td><b>Sequential</b> per (connection, object) by scheduler design</td><td>RMW (whole blob)</td></tr>
+      <tr><td><b>Reuses existing infra</b></td><td class="rec">No, new dependency</td><td>Yes, same bucket, <code>v2/</code> prefix</td><td>Yes</td></tr>
+      <tr><td><b>Inspectability</b></td><td class="rec">Easier (via endpoint), human-readable keys</td><td><b>Easy</b>, plaintext, human-readable keys</td><td>Hard (encrypted)</td></tr>
+      <tr><td><b>Scalability</b></td><td class="rec">Best (bounded per-key)</td><td>Medium, per-object split shrinks blobs, not O(1)</td><td>Poor (one big blob, all objects)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    <b>Related internal drafts (HTML):</b>
+    <code>dedup-unbatch-two-phase-design.html</code> (how the batched Redis dedup runs in the pipeline) ·
+    <code>outlook-dedup.html</code> (how Outlook dedup works today) ·
+    <code>uselastpolldate.html</code> (data-date vs clock watermark) ·
+    <code>outlook-docs-update-proposal.html</code> (public docs note on Graph sync lag).
+  </div>
+
+</div>
+</body>
+</html>
