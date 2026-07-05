@@ -55,13 +55,8 @@
 <body>
 <div class="wrap">
 
-  <h1>Redis Usage — Udon &amp; Gallup</h1>
-  <p class="sub">Internal review draft · current-state analysis to decide whether Gallup needs a <b>dedicated Redis</b> · companion to <code>dedup-store-fork-design.html</code> (ENGCE-58349, Option 2).</p>
+  <h1>Redis Usage - Udon &amp; Gallup</h1>
 
-  <div class="callout c-blue">
-    <span class="t">Why this doc</span>
-    The dedup-store fork's <b>Option 2</b> proposes a keyed store (Redis) for platform dedup. Today <b>Gallup points at Udon's Redis</b> (<code>Cfg.ts</code> literally comments <i>"Redis configuration (shared with Udon)"</i>). Before adding a high-churn dedup workload, we need to understand what each service uses Redis for today, and whether co-tenancy with Udon is safe. This inventories both, then makes a recommendation.
-  </div>
 
   <!-- ========================= TL;DR ========================= -->
   <h2>TL;DR</h2>
@@ -122,10 +117,7 @@
       <tr><td>—</td><td><b>Pub/sub cache invalidation</b></td><td class="mono">Level2CacheSubscriber.java</td><td>keyspace expired/evicted events (<code>notify-keyspace-events=xeEg</code>)</td><td>—</td><td>—</td></tr>
     </tbody>
   </table>
-  <div class="callout c-amber">
-    <span class="t">Operational note — Udon flushes Redis on deploy</span>
-    Udon ships a <b>pre-install/upgrade Helm hook</b> (<code>job-redis-cache-bust.yml</code> → <code>bust-redis-cache.sh</code>) that flushes Redis keys for a clean state. Safe for Udon's caches (rebuildable), but it would <b>erase any co-tenant dedup state</b> living on the same instance.
-  </div>
+
 
   <!-- ========================= GALLUP ========================= -->
   <h2>3 · Gallup — Redis use cases</h2>
@@ -142,25 +134,7 @@
     No distributed locks, queues, pub/sub, sessions, rate-limiting, or dedup/<code>hookState</code>. The <code>AuthHttpClientImpl.ts:54</code> <code>cache.set</code> is a local in-process <code>NodeCache</code>, <b>not</b> Redis. Gallup's <code>hookState</code> lives in the <b>encrypted object-store blob</b>, not Redis. Gallup's entire Redis footprint is one rebuildable, 1h-TTL, circuit-breakered config cache.
   </div>
 
-  <!-- ========================= DECISION ========================= -->
-  <h2>4 · Does a dedicated Redis for Gallup make sense?</h2>
-
-  <h3><span class="pill pill-green">For</span> a dedicated Gallup Redis</h3>
-  <ul>
-    <li><b>Blast-radius isolation.</b> A Gallup bug or load spike — e.g. dedup doing thousands of ops/poll on the 100K-entry heavy tail (see dedup-store-fork Option 2 §4) — today lands on the <b>same cluster holding Udon's 2FA codes, login throttling, locks, and OAuth/provisioning state</b> (use cases B, C, F). Those are correctness- and security-critical for Udon.</li>
-    <li><b>Workload mismatch.</b> Dedup is high-churn, short-TTL, high-fan-out — exactly what pressures memory &amp; eviction. Udon's L1 caches rely on keyspace-notify pub/sub; a high-write co-tenant can trigger evictions that <b>silently break Udon's cache-invalidation</b>.</li>
-    <li><b>Independent capacity &amp; TTL policy.</b> A dedicated instance lets Gallup size memory and <code>maxmemory-policy</code> for dedup (native per-key 24h TTL; possibly Redis <b>7.4+</b> for <code>HEXPIRE</code>) without coordinating Udon's HA config.</li>
-    <li><b>Deploy-flush hazard.</b> Udon's <code>bust-redis-cache</code> hook flushes the instance on every deploy. On a shared instance that would <b>wipe Gallup dedup keys → a burst of duplicate emits</b>. Tolerable for a rebuildable config cache; <b>not</b> safe for dedup.</li>
-    <li><b>Security surface.</b> Co-tenancy means one password/ACL compromise spans Gallup's dedup keys <i>and</i> Udon's HIGH-sensitivity 2FA/OAuth state.</li>
-  </ul>
-
-  <h3><span class="pill pill-red">Against</span> (keep sharing)</h3>
-  <ul>
-    <li><b>Gallup's footprint today is negligible</b> — one 1h-TTL config cache, circuit-breakered, degrades gracefully to no-cache. Does not justify new infra <i>on its own</i>.</li>
-    <li><b>New infra cost</b> — the dedup design itself flags Option 2's downside as "a new infra dependency to provision/operate." A dedicated Redis is exactly that, multiplied per ring/region.</li>
-    <li>If dedup lands on <b>Option 1 (object-store blob)</b> instead of Redis, the dedicated-Redis question largely disappears.</li>
-  </ul>
-
+  
   <h3>At a glance</h3>
   <table>
     <thead><tr><th style="width:26%">Dimension</th><th>Shared (today)</th><th class="rec">Dedicated Gallup Redis</th></tr></thead>
@@ -175,22 +149,6 @@
     </tbody>
   </table>
 
-  <!-- ========================= RECOMMENDATION ========================= -->
-  <h2>5 · Recommendation</h2>
-  <div class="callout c-amber">
-    <span class="t">Decision</span>
-    <ul style="margin:6px 0 0;">
-      <li><b>For Gallup's current usage (config caching): keep the shared Redis.</b> One rebuildable 1h-TTL cache does not warrant new infra.</li>
-      <li><b>If the dedup-store fork picks Option 2 (Redis): put it on a dedicated Gallup Redis, not Udon's.</b> The driver is not raw size — it's that dedup is high-churn and Udon's instance holds security-critical 2FA/lock/OAuth state <i>and</i> is flushed on every Udon deploy. That couples Gallup's data-correctness (no duplicate emits) to Udon's operational and capacity decisions.</li>
-      <li><b>Feed this back into <code>dedup-store-fork-design.html</code> Option 2.</b> Under "Cost — a new infra dependency," clarify it means a <b>dedicated</b> instance, and add the <b>deploy-flush hazard</b> as a concrete correctness reason, not just isolation hygiene.</li>
-    </ul>
-  </div>
-
-  <div class="footer">
-    <b>Related internal drafts:</b>
-    <code>dedup-store-fork-design.html</code> (the storage fork this analysis feeds — Option 2 = Redis).<br/>
-    Evidence drawn from the Udon (Jedis) and Gallup (<code>redis@4.6.13</code>) codebases; file:line references inline above.
-  </div>
 
 </div>
 </body>

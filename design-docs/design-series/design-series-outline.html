@@ -79,13 +79,14 @@
     <a href="#s4">4. Contract Changes &amp; Configuration</a>
     <a href="#s5">5. Proposed Design: Keyed Store (Redis)</a>
     <a href="#s6">6. Design in Depth</a>
-    <a href="#s7">7. Alternate Design Options</a>
-    <a href="#s8">8. Storage Comparison</a>
+    <a href="#s7">7. Redis Unavailable: Degrade and Recover</a>
+    <a href="#s8">8. Alternate Design Options</a>
     <a href="#s9">9. Current Production Load</a>
-    <a href="#s10">10. Shared vs Dedicated Redis</a>
-    <a href="#s11">11. Decisions</a>
-    <a href="#s12">12. Open Questions</a>
-    <a href="#s13">13. Reference Documents</a>
+    <a href="#s10">10. Storage Comparison</a>
+    <a href="#s11">11. Shared vs Dedicated Redis</a>
+    <a href="#s12">12. Decisions</a>
+    <a href="#s13">13. Open Questions</a>
+    <a href="#s14">14. Reference Documents</a>
   </div>
 
   <!-- 1 -->
@@ -597,14 +598,161 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
         <tr><td><b>Lua / EVAL</b></td><td>One server-side script reads all keys and conditionally writes the new ones, returning which were new</td><td>1</td><td>native per-key</td><td>atomic; also hardens the rare stuck-reschedule overlap</td></tr>
       </tbody>
     </table>
-    <p class="small">The instance choice (dedicated vs shared Redis) is in Section 10.</p>
+    <p class="small">The instance choice (dedicated vs shared Redis) is in Section 11.</p>
 
     <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="dedup-unbatch-two-phase-design.html">dedup-unbatch-two-phase-design.html</a> (the two-phase Unbatch, the decision table, and the bounded-regression argument).</p>
   </div>
 
   <!-- 7 -->
   <div class="sec" id="s7">
-    <div class="sechdr"><span class="secno">7</span><span class="secttl">Alternate Design Options</span></div>
+    <div class="sechdr"><span class="secno">7</span><span class="secttl">Redis Unavailable: Degrade and Recover</span></div>
+    <p class="summary">When the deduplication store is unreachable, dedup can neither check nor record a key. Look-back and dedup are a coupled pair (look-back without dedup produces a duplicate flood, Section 3), so the poller drops both together and falls back to strict-watermark polling. It never fails closed, so a real event is never dropped because the store is down, and it restores look-back only once doing so cannot re-emit an un-recorded record, which keeps recovery free of a duplicate burst.</p>
+
+    <h3>The lifecycle</h3>
+    <div class="fig">
+      <div class="figcap">State machine: Normal degrades to Degraded on a Redis outage, recovers through a suppressed-look-back window, then returns to Normal</div>
+      <div class="anim-ctrl">
+        <button type="button" data-anim="toggle" title="Play or pause" aria-label="Pause">⏸</button>
+        <button type="button" data-anim="restart" title="Restart" aria-label="Restart">↻</button>
+      </div>
+      <svg class="story" viewBox="0 0 900 215" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs><marker id="ah7a" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#64748b"/></marker></defs>
+
+        <text x="107" y="46" font-size="10.5" fill="#b45309" text-anchor="middle" font-weight="700">Redis down</text>
+        <line x1="197" y1="104" x2="243" y2="104" stroke="#64748b" stroke-width="1.4" marker-end="url(#ah7a)"/>
+        <text x="332" y="46" font-size="10.5" fill="#1e40af" text-anchor="middle" font-weight="700">Redis up</text>
+        <line x1="422" y1="104" x2="468" y2="104" stroke="#64748b" stroke-width="1.4" marker-end="url(#ah7a)"/>
+        <text x="557" y="40" font-size="9.5" fill="#047857" text-anchor="middle" font-weight="700">watermark &#8722; lookBack</text>
+        <text x="557" y="52" font-size="9.5" fill="#047857" text-anchor="middle" font-weight="700">&gt; W_outage</text>
+        <line x1="647" y1="104" x2="693" y2="104" stroke="#64748b" stroke-width="1.4" marker-end="url(#ah7a)"/>
+
+        <g>
+          <rect x="20" y="64" width="175" height="82" rx="9" fill="#ecfdf5" stroke="#047857" stroke-width="1.4"/>
+          <text x="107" y="88" font-size="12" fill="#065f46" text-anchor="middle" font-weight="700">1 &#183; Normal</text>
+          <text x="107" y="110" font-size="11" fill="#047857" text-anchor="middle">look-back ON</text>
+          <text x="107" y="126" font-size="11" fill="#047857" text-anchor="middle">dedup ON</text>
+        </g>
+        <g>
+          <rect x="245" y="64" width="175" height="82" rx="9" fill="#fffbeb" stroke="#b45309" stroke-width="1.4"/>
+          <text x="332" y="86" font-size="12" fill="#92400e" text-anchor="middle" font-weight="700">2 &#183; Degraded</text>
+          <text x="332" y="106" font-size="10.5" fill="#b45309" text-anchor="middle">strict watermark</text>
+          <text x="332" y="121" font-size="10.5" fill="#b45309" text-anchor="middle">look-back OFF &#183; dedup OFF</text>
+          <text x="332" y="136" font-size="10.5" fill="#b45309" text-anchor="middle">emit once (fail-open)</text>
+        </g>
+        <g>
+          <rect x="470" y="64" width="175" height="82" rx="9" fill="#eff6ff" stroke="#1e40af" stroke-width="1.4"/>
+          <text x="557" y="88" font-size="12" fill="#1e3a5f" text-anchor="middle" font-weight="700">3 &#183; Recovering</text>
+          <text x="557" y="110" font-size="10.5" fill="#1e40af" text-anchor="middle">dedup ON &#183; recording ON</text>
+          <text x="557" y="126" font-size="10.5" fill="#1e40af" text-anchor="middle">look-back OFF (suppressed)</text>
+        </g>
+        <g>
+          <rect x="695" y="64" width="175" height="82" rx="9" fill="#ecfdf5" stroke="#047857" stroke-width="1.4"/>
+          <text x="782" y="88" font-size="12" fill="#065f46" text-anchor="middle" font-weight="700">4 &#183; Normal</text>
+          <text x="782" y="110" font-size="11" fill="#047857" text-anchor="middle">look-back ON</text>
+          <text x="782" y="126" font-size="11" fill="#047857" text-anchor="middle">dedup ON</text>
+        </g>
+
+        <rect x="20" y="64" width="175" height="82" rx="9" fill="none" stroke="#0f172a" stroke-width="3">
+          <animateTransform attributeName="transform" type="translate" values="0,0;0,0;225,0;225,0;450,0;450,0;675,0;675,0" keyTimes="0;0.24;0.25;0.49;0.5;0.74;0.75;1" dur="12s" repeatCount="indefinite"/>
+        </rect>
+
+        <text x="450" y="184" font-size="11" fill="#64748b" text-anchor="middle">The circuit breaker drives 1&#8594;2 on a failed Redis call; a persisted watermark checkpoint drives 3&#8594;4 once look-back can no longer reach the outage window.</text>
+      </svg>
+      <p class="small"><b>Read it as:</b> a Redis call fails, so the poll degrades to strict watermark and emits without dedup. When Redis returns, dedup and recording resume immediately, but look-back stays off (Recovering) until the watermark has moved a full look-back past the outage, after which normal look-back resumes.</p>
+    </div>
+
+    <h3>While Redis is down</h3>
+    <ul>
+      <li><b>Strict watermark, no look-back.</b> Each poll queries <code>field &gt; watermark</code> with the trailing window removed, so it returns only genuinely new records.</li>
+      <li><b>No dedup, fail-open.</b> With the store unreachable, every record is emitted once and none is suppressed. The pipeline never fails closed, so no real event is dropped because the store is down.</li>
+      <li><b>The watermark still advances.</b> The cursor moves forward normally, so the outage neither stalls the connector nor replays the whole backlog on recovery.</li>
+      <li><b>Bounded cost.</b> The only exposure is the look-back guarantee itself: a late-visible record inside the outage window can be missed, which is exactly the pre-look-back behavior, for the duration of the outage.</li>
+    </ul>
+
+    <h3>Recovery, worked example</h3>
+    <div class="fig">
+      <div class="figcap">The query's lower bound steps forward and never re-enters the un-recorded window, so recovery emits zero duplicates</div>
+      <div class="anim-ctrl">
+        <button type="button" data-anim="toggle" title="Play or pause" aria-label="Pause">⏸</button>
+        <button type="button" data-anim="restart" title="Restart" aria-label="Restart">↻</button>
+      </div>
+      <svg class="story" viewBox="0 0 900 250" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <text x="450" y="30" font-size="12" fill="#b45309" text-anchor="middle" font-weight="700" opacity="1">Poll 10:10 &#183; Redis down: query field &gt; 10:05 (strict), emit b and c once, cannot record<animate attributeName="opacity" values="1;1;0;0" keyTimes="0;0.30;0.33;1" dur="12s" repeatCount="indefinite"/></text>
+        <text x="450" y="30" font-size="12" fill="#1e40af" text-anchor="middle" font-weight="700" opacity="0">Poll 10:15 &#183; Recovering: query field &gt; 10:10 (strict), resume dedup and recording, look-back suppressed<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.33;0.36;0.63;0.66;1" dur="12s" repeatCount="indefinite"/></text>
+        <text x="450" y="30" font-size="12" fill="#047857" text-anchor="middle" font-weight="700" opacity="0">Poll 10:20 &#183; Resume: query field &gt; 10:13 (look-back), window never re-entered, zero duplicates<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.66;0.69;1" dur="12s" repeatCount="indefinite"/></text>
+
+        <rect x="100" y="137" width="225" height="38" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4 3" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.10;0.16;1" dur="12s" repeatCount="indefinite"/></rect>
+        <text x="212" y="160" font-size="10" fill="#64748b" text-anchor="middle" opacity="0">un-recorded during outage<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.10;0.16;1" dur="12s" repeatCount="indefinite"/></text>
+
+        <line x1="90" y1="175" x2="810" y2="175" stroke="#94a3b8" stroke-width="1.5"/>
+        <line x1="100" y1="170" x2="100" y2="180" stroke="#94a3b8"/><text x="100" y="196" font-size="10.5" fill="#64748b" text-anchor="middle">10:05</text>
+        <line x1="325" y1="170" x2="325" y2="180" stroke="#94a3b8"/><text x="325" y="196" font-size="10.5" fill="#64748b" text-anchor="middle">10:10</text>
+        <line x1="550" y1="170" x2="550" y2="180" stroke="#94a3b8"/><text x="550" y="196" font-size="10.5" fill="#64748b" text-anchor="middle">10:15</text>
+        <line x1="775" y1="170" x2="775" y2="180" stroke="#94a3b8"/><text x="775" y="196" font-size="10.5" fill="#64748b" text-anchor="middle">10:20</text>
+
+        <text x="319" y="128" font-size="10" fill="#047857" text-anchor="end" font-weight="700" opacity="0">W_outage<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.33;0.37;1" dur="12s" repeatCount="indefinite"/></text>
+
+        <circle cx="145" cy="175" r="6" fill="#1e40af"/><text x="145" y="214" font-size="10" fill="#1e3a5f" text-anchor="middle">b 10:06</text>
+        <circle cx="280" cy="175" r="6" fill="#1e40af"/><text x="280" y="214" font-size="10" fill="#1e3a5f" text-anchor="middle">c 10:09</text>
+        <circle cx="505" cy="175" r="6" fill="#1e40af" opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.33;0.37;1" dur="12s" repeatCount="indefinite"/></circle>
+        <text x="505" y="214" font-size="10" fill="#1e3a5f" text-anchor="middle" opacity="0">f 10:14<animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.33;0.37;1" dur="12s" repeatCount="indefinite"/></text>
+
+        <text x="212" y="232" font-size="10" fill="#b45309" text-anchor="middle" opacity="0">emit once, not recorded<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.06;0.10;0.30;0.33;1" dur="12s" repeatCount="indefinite"/></text>
+        <text x="505" y="232" font-size="10" fill="#047857" text-anchor="middle" opacity="0">emit + record<animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.36;0.40;0.63;0.66;1" dur="12s" repeatCount="indefinite"/></text>
+
+        <g opacity="0"><animate attributeName="opacity" values="0;0;1;1" keyTimes="0;0.66;0.70;1" dur="12s" repeatCount="indefinite"/>
+          <circle cx="145" cy="175" r="11" fill="none" stroke="#047857" stroke-width="2"/>
+          <circle cx="280" cy="175" r="11" fill="none" stroke="#047857" stroke-width="2"/>
+          <text x="212" y="232" font-size="10" fill="#047857" text-anchor="middle">b, c never re-scanned</text>
+          <circle cx="505" cy="175" r="11" fill="none" stroke="#7c3aed" stroke-width="2"/>
+          <text x="560" y="232" font-size="10" fill="#7c3aed" text-anchor="start">f re-scanned, deduped</text>
+        </g>
+
+        <g opacity="0"><animate attributeName="opacity" values="0;0;1;1;0;0" keyTimes="0;0.34;0.38;0.60;0.64;1" dur="12s" repeatCount="indefinite"/>
+          <line x1="235" y1="110" x2="235" y2="178" stroke="#b91c1c" stroke-width="1.6" stroke-dasharray="5 3"/>
+          <text x="235" y="100" font-size="9.5" fill="#b91c1c" text-anchor="middle" font-weight="700">look-back would start here</text>
+          <text x="235" y="88" font-size="9.5" fill="#b91c1c" text-anchor="middle">(10:08) &#8594; re-emits c</text>
+        </g>
+
+        <g transform="translate(100,0)">
+          <line x1="0" y1="84" x2="0" y2="178" stroke="#b45309" stroke-width="2.2"><animate attributeName="stroke" values="#b45309;#b45309;#047857;#047857" keyTimes="0;0.63;0.67;1" dur="12s" repeatCount="indefinite"/></line>
+          <text x="0" y="76" font-size="10" fill="#334155" text-anchor="middle" font-weight="700">lower bound</text>
+          <animateTransform attributeName="transform" type="translate" additive="sum" values="0,0;0,0;225,0;225,0;360,0;360,0" keyTimes="0;0.30;0.34;0.63;0.67;1" dur="12s" repeatCount="indefinite"/>
+        </g>
+      </svg>
+      <p class="small">Poll interval 5 minutes, look-back 2 minutes. The watermark is clock-driven, so each poll advances it to the poll time. The last healthy poll ran at 10:05 and recorded its keys, so the watermark is 10:05 (W_prev); after the 10:15 poll it is 10:15, so the 10:20 look-back starts at 10:15 &#8722; 2m = 10:13.</p>
+    </div>
+
+    <table>
+      <thead><tr><th>Poll</th><th>Redis</th><th>Look-back</th><th>Query <code>field &gt;</code></th><th>New records</th><th>Emit</th><th>Record to Redis</th><th>Watermark after</th><th>Duplicates</th></tr></thead>
+      <tbody>
+        <tr><td>10:10</td><td><b>down</b></td><td>off (strict)</td><td>10:05</td><td>b 10:06, c 10:09</td><td>b, c</td><td>cannot</td><td>10:10 (W_outage)</td><td>none</td></tr>
+        <tr><td>10:15</td><td>back up (recovering)</td><td>off (suppressed)</td><td>10:10</td><td>e 10:11, f 10:14</td><td>e, f</td><td>e, f</td><td>10:15</td><td>none</td></tr>
+        <tr class="rec"><td>10:20</td><td>up</td><td><b>on (resumed)</b></td><td>10:13</td><td>f (re-scan), g 10:17, h 10:19</td><td>g, h</td><td>g, h</td><td>10:20</td><td>none</td></tr>
+      </tbody>
+    </table>
+    <p><b>Why no duplicates.</b> The query's lower bound steps 10:05, then 10:10, then 10:13, and once the outage ends it never drops back below W_outage. The un-recorded records (b and c, both at or before 10:10) are therefore never re-scanned. At 10:20, f does fall inside the resumed look-back window, but f was recorded at 10:15, so dedup drops it on the one round trip.</p>
+
+    <h3>Why look-back stays off for one window</h3>
+    <p>Look-back resumes only once <code>watermark &#8722; lookBack</code> has moved past <code>W_outage</code>, the watermark at the last degraded poll. At 10:15 that value is <code>10:10 &#8722; 2m = 10:08</code>, which is still inside the un-recorded window, so a look-back query would re-emit c; look-back is suppressed and the poll stays strict. At 10:20 the value is <code>10:15 &#8722; 2m = 10:13</code>, past W_outage (10:10), so look-back is safe to resume. Because the poll interval (5 minutes) exceeds the look-back (2 minutes), suppression lasts a single recovery poll; a look-back longer than one interval's advance extends it proportionally.</p>
+
+    <h3>Where the recovery state lives</h3>
+    <ul>
+      <li><b><code>ConnectionPollerObject.lookBackResumeAfter</code> (nullable DATETIME).</b> Null means normal, use look-back. On a degraded poll it is set to that poll's watermark (W_outage). At poll start, if it is non-null and <code>watermark &#8722; lookBack &gt; lookBackResumeAfter</code>, it is cleared and look-back is used; otherwise the poll stays strict. It is written in the same row update as the watermark, so the two can never drift.</li>
+      <li><b>Why this row.</b> The checkpoint is only meaningful relative to the watermark it is compared against, and that watermark (<code>lastPollDataDate</code> / <code>lastPollDate</code>) already lives on <code>ConnectionPollerObject</code>. The column is per (connection, object), survives restarts and a poll landing on a different worker, needs no Redis (which is down), and adds no extra I/O since the row is already written each poll.</li>
+      <li><b>Circuit breaker (in-memory).</b> Detects live Redis health with a short timeout so a degraded poll never hangs, flips the poll into strict mode, and stamps <code>lookBackResumeAfter</code>. The durable column then carries that decision forward across polls.</li>
+    </ul>
+
+    <h3>Alternatives not taken</h3>
+    <ul>
+      <li><b>Fail-closed (treat every record as already seen while the store is down).</b> Would silently drop real events, the one outcome the pipeline must never produce.</li>
+      <li><b>Pause polling (stop emitting and freeze the watermark until the store returns).</b> Would delay every trigger for the full outage and stall all connectors at once on a region-wide Redis outage.</li>
+    </ul>
+  </div>
+
+  <!-- 8 -->
+  <div class="sec" id="s8">
+    <div class="sechdr"><span class="secno">8</span><span class="secttl">Alternate Design Options</span></div>
     <p class="summary">Two alternatives were considered. Both avoid new infrastructure, but neither scales as cleanly on the high-volume tail, because a blob must either hold the whole keyset in memory or perform per-key I/O.</p>
 
     <h3>Object-store blob <span class="pill pill-green">simple</span></h3>
@@ -623,9 +771,21 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     <p class="src"><span class="lbl">Reference</span> &nbsp;All three storage options (Redis, object-store blob, and encrypted per-instance blob) are compared in depth, with diagrams, in <a href="dedup-store-fork-design.html">dedup-store-fork-design.html</a>.</p>
   </div>
 
-  <!-- 8 -->
-  <div class="sec" id="s8">
-    <div class="sechdr"><span class="secno">8</span><span class="secttl">Storage Comparison</span></div>
+  <!-- 9 -->
+  <div class="sec" id="s9">
+    <div class="sechdr"><span class="secno">9</span><span class="secttl">Current Production Load</span></div>
+    <p class="summary">Before committing to a store, we measured the polling load per cloud region from "poller job metric" traces, together with object-store and Redis latencies. The data supports Redis scaling on the high-volume tail while object storage remains adequate for the common case.</p>
+    <ul>
+      <li><b>Operation rate</b> is comfortably within budget for object storage in steady state (on the order of tens of operations per second per region). Reading and writing a blob per poll fits well within that budget.</li>
+      <li><b>Blob-size distribution</b> is heavily skewed: the majority of blobs are small, with a heavy tail of large blobs where the whole-blob read-modify-write is costly.</li>
+      <li><b>Latency.</b> Redis is already in the stack with a low single-digit-millisecond p99; object-store blob p99 is materially higher, so the heavy tail is where a keyed store pays off.</li>
+    </ul>
+    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="dedup-load-assessment.html">dedup-load-assessment.html</a>, <a href="dedup-redis-load-by-region.html">dedup-redis-load-by-region.html</a>. Exact per-region figures are in those documents.</p>
+  </div>
+
+  <!-- 10 -->
+  <div class="sec" id="s10">
+    <div class="sechdr"><span class="secno">10</span><span class="secttl">Storage Comparison</span></div>
     <p class="summary">Redis is the preferred store because it scales to the high-volume tail. The plaintext object-store blob is the simple option when a new Redis instance is not warranted; the encrypted per-instance blob is the status quo.</p>
     <table>
       <thead><tr><th>Dimension</th><th class="rec">Redis (proposed)</th><th>Object-store blob</th><th>Encrypted per-instance blob</th></tr></thead>
@@ -645,42 +805,35 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     </div>
   </div>
 
-  <!-- 9 -->
-  <div class="sec" id="s9">
-    <div class="sechdr"><span class="secno">9</span><span class="secttl">Current Production Load</span></div>
-    <p class="summary">Before committing to a store, we measured the polling load per cloud region from "poller job metric" traces, together with object-store and Redis latencies. The data supports Redis scaling on the high-volume tail while object storage remains adequate for the common case.</p>
-    <ul>
-      <li><b>Operation rate</b> is comfortably within budget for object storage in steady state (on the order of tens of operations per second per region). Reading and writing a blob per poll fits well within that budget.</li>
-      <li><b>Blob-size distribution</b> is heavily skewed: the majority of blobs are small, with a heavy tail of large blobs where the whole-blob read-modify-write is costly.</li>
-      <li><b>Latency.</b> Redis is already in the stack with a low single-digit-millisecond p99; object-store blob p99 is materially higher, so the heavy tail is where a keyed store pays off.</li>
-    </ul>
-    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="dedup-load-assessment.html">dedup-load-assessment.html</a>, <a href="dedup-redis-load-by-region.html">dedup-redis-load-by-region.html</a>. Exact per-region figures are in those documents.</p>
-  </div>
-
-  <!-- 10 -->
-  <div class="sec" id="s10">
-    <div class="sechdr"><span class="secno">10</span><span class="secttl">Shared vs Dedicated Redis</span></div>
+  <!-- 11 -->
+  <div class="sec" id="s11">
+    <div class="sechdr"><span class="secno">11</span><span class="secttl">Shared vs Dedicated Redis</span></div>
     <p class="summary">The proposed design uses Redis, so the instance choice matters. Gallup today uses Udon's shared HA cluster for a single trivial configuration cache. A high-churn deduplication workload should not be co-tenanted there.</p>
     <table>
       <thead><tr><th style="width:24%">Dimension</th><th>Shared Udon Redis (today)</th><th class="rec">Dedicated Gallup Redis</th></tr></thead>
       <tbody>
-        <tr><td><b>Blast radius</b></td><td>A Gallup spike affects Udon's 2FA codes, login throttling, locks, and OAuth or provisioning state</td><td class="rec">Isolated to deduplication data</td></tr>
-        <tr><td><b>Eviction interplay</b></td><td>A high-write co-tenant can trigger evictions that silently break Udon's keyspace-notify cache invalidation</td><td class="rec">Independent <code>maxmemory-policy</code></td></tr>
+        <tr><td><b>Blast radius</b></td><td>A Gallup spike affects Udon's cache functionality and vice versa. No single responsibility for service. If there is any incident with Udon and we have to flush cache Gallup will be affected.</td><td class="rec">Isolated to Gallup usages for Challenge config, deduplication data, etc</td></tr>
+        <tr><td><b>Eviction interplay</b></td><td>A high-write can trigger evictions that silently break Gallup/Udon's cache invalidation</td><td class="rec">Independent <code>maxmemory-policy</code></td></tr>
         <tr><td><b>Deploy flush</b></td><td>Udon's <code>bust-redis-cache</code> Helm hook flushes the instance on every deploy, which would wipe deduplication keys and cause a burst of duplicate emits</td><td class="rec">Unaffected</td></tr>
-        <tr><td><b>Security</b></td><td>One password or ACL spans deduplication keys and Udon's high-sensitivity state</td><td class="rec">Scoped to deduplication data</td></tr>
         <tr><td><b>Infrastructure cost</b></td><td class="rec">None new</td><td>A new instance per ring and region to provision and operate</td></tr>
       </tbody>
     </table>
     <div class="callout c-amber">
-      <span class="t">Recommendation from the analysis</span>
-      <b>Use a dedicated Gallup Redis for deduplication.</b> Keep the shared Udon Redis only for Gallup's current configuration cache (a single rebuildable one-hour-TTL, circuit-breakered entry, so new infrastructure is unjustified there). The decisive reason is <b>operational coupling, not raw size</b>: Udon <b>flushes its Redis on every deploy</b> (the <code>bust-redis-cache</code> Helm hook), and the instance also holds security-critical 2FA and OAuth state. If dedup shared that instance, an Udon deploy or incident would <b>flush our dedup keys and cause a burst of duplicate emits</b>, making Gallup's correctness hostage to Udon's operations. A dedicated instance isolates dedup from that, and lets us size memory, eviction policy, and TTL independently.
+      <span class="t">Recommendation</span>
+      <b>Use a dedicated Gallup Redis.</b>
+      <ul style="margin:6px 0 0;">
+        <li>Host the deduplication keyspace on it (the proposed store).</li>
+        <li>Gallup can also use it for its own caching constructs (for example the configuration cache), so Gallup owns its Redis end-to-end instead of depending on Udon's shared cluster.</li>
+        <li>The decisive reason is operational coupling: Udon flushes its Redis on every deploy (the <code>bust-redis-cache</code> Helm hook), so a shared instance would wipe dedup keys and cause a burst of duplicate emits.</li>
+        <li>A dedicated instance isolates blast radius and lets us size memory, eviction policy, and TTL independently.</li>
+      </ul>
     </div>
     <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="redis-usage-udon-gallup.html">redis-usage-udon-gallup.html</a> (full inventory of both services' Redis usage). Team recommendation on the instance choice to be added.</p>
   </div>
 
-  <!-- 11 -->
-  <div class="sec" id="s11">
-    <div class="sechdr"><span class="secno">11</span><span class="secttl">Decisions</span></div>
+  <!-- 12 -->
+  <div class="sec" id="s12">
+    <div class="sechdr"><span class="secno">12</span><span class="secttl">Decisions</span></div>
     <table>
       <thead><tr><th style="width:30%">Decision</th><th>Rationale</th><th>Alternative rejected</th></tr></thead>
       <tbody>
@@ -696,12 +849,12 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     </table>
   </div>
 
-  <!-- 12 -->
-  <div class="sec" id="s12">
-    <div class="sechdr"><span class="secno">12</span><span class="secttl">Open Questions</span></div>
+  <!-- 13 -->
+  <div class="sec" id="s13">
+    <div class="sechdr"><span class="secno">13</span><span class="secttl">Open Questions</span></div>
     <ul>
-      <li><b>Store choice confirmation.</b> Redis is proposed (Section 5) for its scaling; the plaintext object-store blob (Section 7) is the simple fallback if a new instance is not warranted. Confirm against the load and latency evidence in Section 9.</li>
-      <li><b>Which Redis instance.</b> A dedicated Gallup Redis (recommended) versus Udon's shared instance, weighing new infrastructure per ring and region against the coupling risks in Section 10.</li>
+      <li><b>Store choice confirmation.</b> Redis is proposed (Section 5) for its scaling; the plaintext object-store blob (Section 8) is the simple fallback if a new instance is not warranted. Confirm against the load and latency evidence in Section 9.</li>
+      <li><b>Which Redis instance.</b> A dedicated Gallup Redis (recommended) versus Udon's shared instance, weighing new infrastructure per ring and region against the coupling risks in Section 11.</li>
       <li><b>Retention model.</b> A flat 24 hours versus a look-back-bounded window. An event can only re-surface within one look-back window, and the bounded model shrinks the keyset substantially, easing the storage-scale concern.</li>
       <li><b>Check scoping.</b> Only events within the look-back overlap window can be cross-poll duplicates. The store check could be scoped to that slice rather than the whole page.</li>
       <li><b><code>useHydrationBeforeDedup</code> mechanism.</b> An explicit connector flag (simple, with a footgun) versus engine auto-derivation (resolve keys pre-hydrate and deduplicate early only when all fields are present).</li>
@@ -709,9 +862,9 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     </ul>
   </div>
 
-  <!-- 13 -->
-  <div class="sec" id="s13">
-    <div class="sechdr"><span class="secno">13</span><span class="secttl">Reference Documents</span></div>
+  <!-- 14 -->
+  <div class="sec" id="s14">
+    <div class="sechdr"><span class="secno">14</span><span class="secttl">Reference Documents</span></div>
     <table>
       <thead><tr><th>Document</th><th>What it covers</th><th>Section</th></tr></thead>
       <tbody>
