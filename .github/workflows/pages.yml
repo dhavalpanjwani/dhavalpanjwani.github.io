@@ -19,7 +19,7 @@ jobs:
   deploy:
     environment:
       name: github-pages
-      url: ${{ steps.retry_deploy.outputs.page_url || steps.deploy_first_attempt.outputs.page_url }}
+      url: ${{ steps.deploy_first_attempt.outputs.page_url || steps.retry_deploy.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
