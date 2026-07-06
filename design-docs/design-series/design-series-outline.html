@@ -64,9 +64,50 @@
   .anim-ctrl{display:flex; gap:6px; justify-content:flex-end; margin:2px 0 0;}
   .anim-ctrl button{font-size:13px; line-height:1; color:#1e40af; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; width:28px; height:24px; padding:0; cursor:pointer;}
   .anim-ctrl button:hover{background:#dbeafe;}
+
+  /* Theme toggle button */
+  #theme-toggle{position:fixed; top:14px; right:16px; z-index:100; width:40px; height:34px;
+    border-radius:9px; border:1px solid var(--line); background:#fff; color:#1e40af;
+    font-size:16px; line-height:1; cursor:pointer; box-shadow:0 1px 4px rgba(15,23,42,.12);}
+  #theme-toggle:hover{filter:brightness(0.97);}
+
+  /* Dark mode: flip the page chrome; figures and callouts stay on light cards so the inline SVG diagrams keep their colors */
+  html[data-theme="dark"] body{background:#0b1220; color:#e2e8f0;}
+  html[data-theme="dark"] h1{color:#93c5fd;}
+  html[data-theme="dark"] h2{color:#93c5fd; border-bottom-color:#28374d;}
+  html[data-theme="dark"] h3{color:#bfdbfe;}
+  html[data-theme="dark"] .sub,
+  html[data-theme="dark"] .small,
+  html[data-theme="dark"] .src,
+  html[data-theme="dark"] .lbl{color:#94a3b8;}
+  html[data-theme="dark"] .summary{color:#cbd5e1;}
+  html[data-theme="dark"] a{color:#7dd3fc;}
+  html[data-theme="dark"] code{background:#1e293b; color:#93c5fd;}
+  html[data-theme="dark"] blockquote{background:#111c30; color:#cbd5e1; border-left-color:#475569;}
+  html[data-theme="dark"] .sec{background:#111c30; border-color:#28374d;}
+  html[data-theme="dark"] .sechdr{border-bottom-color:#28374d;}
+  html[data-theme="dark"] .secttl{color:#93c5fd;}
+  html[data-theme="dark"] table{background:#0f1a2e;}
+  html[data-theme="dark"] th{background:#1e293b; color:#bfdbfe;}
+  html[data-theme="dark"] th,
+  html[data-theme="dark"] td{border-color:#28374d;}
+  html[data-theme="dark"] .rec{background:rgba(16,185,129,.14);}
+  html[data-theme="dark"] .footer{color:#94a3b8; border-top-color:#28374d;}
+  html[data-theme="dark"] .fig{background:#fff; border-color:#28374d;}
+  html[data-theme="dark"] .callout{color:#0f172a;}
+  html[data-theme="dark"] #theme-toggle{background:#1e293b; border-color:#334155; color:#fbbf24;}
 </style>
+<script>
+  /* set theme before first paint to avoid a flash */
+  (function () {
+    var s = null; try { s = localStorage.getItem('theme'); } catch (e) {}
+    if (!s && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) s = 'dark';
+    if (s === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+  })();
+</script>
 </head>
 <body>
+<button id="theme-toggle" type="button" aria-label="Toggle dark mode" title="Switch to dark mode">🌙</button>
 <div class="wrap">
 
   <h1>Poller Tolerance: Lookback and Deduplication</h1>
@@ -565,18 +606,64 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
       <span class="t">Where hydrate runs is governed by <code>useHydrationBeforeDedup</code></span>
       Default false runs deduplication before hydrate, so duplicates skip the costly hydrate and lazy hydration is preserved. A value of true keeps hydrate in Phase 1, required only when the key depends on hydrated fields, at the cost of a bounded whole-page hydrate near a halt. The barrier always runs after <code>postHook</code>, because <code>postHook</code> reclassifies <code>eventType</code> (which selects the key's field set) and can change cardinality.
     </div>
-    <h3>Data model</h3>
-    <p>Each event maps to one flat, human-readable key whose value is the timestamp it was recorded, expiring by native TTL. The object and event type are encoded into the key, so lookups are independent and O(1).</p>
+    <h3>Key resolution and data model</h3>
+    <p>The deduplication key is built from <code>dedupReferenceFields</code>, a per-eventType list the connector declares. Each entry is a <b>dot-path</b> resolved against the event payload (after hydration when <code>useHydrationBeforeDedup</code> requires it, since a referenced field may exist only post-hydration). The resolved values are concatenated and prefixed with the scope (connectionId, object, eventType) to form one flat key. It is not hashed, so a key is self-describing and debuggable, and the scope prefix keeps the same resolved id from different connections or objects from colliding.</p>
+    <div class="fig">
+      <div class="figcap">Key resolution: dot-path reference fields resolved against the event, then scoped and concatenated</div>
+      <svg viewBox="0 0 900 252" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <defs><marker id="ahk" markerWidth="9" markerHeight="9" refX="6.5" refY="3" orient="auto"><path d="M0,0 L6.5,3 L0,6 Z" fill="#64748b"/></marker></defs>
+        <rect x="30" y="34" width="380" height="122" rx="8" fill="#f8fafc" stroke="#cbd5e1"/>
+        <text x="46" y="53" font-size="11" font-weight="700" fill="#64748b">event payload (after hydration)</text>
+        <text x="46" y="76" font-size="12" font-family="monospace" fill="#334155">{ "id": "42",</text>
+        <text x="46" y="94" font-size="12" font-family="monospace" fill="#334155">&#160;&#160;"resource": { "id": "A" },</text>
+        <text x="46" y="112" font-size="12" font-family="monospace" fill="#334155">&#160;&#160;"eventType": "EMAIL_RECEIVED",</text>
+        <text x="46" y="130" font-size="12" font-family="monospace" fill="#334155">&#160;&#160;"createdDateTime": "10:00:00Z" }</text>
+        <rect x="470" y="34" width="400" height="122" rx="8" fill="#f5f3ff" stroke="#ddd6fe"/>
+        <text x="486" y="53" font-size="11" font-weight="700" fill="#7c3aed">dedupReferenceFields (for EMAIL_RECEIVED)</text>
+        <text x="486" y="78" font-size="12" font-family="monospace" fill="#5b21b6">[ "resource.id", "id" ]</text>
+        <text x="486" y="104" font-size="11" fill="#6d28d9">dot-paths resolved against the payload</text>
+        <text x="486" y="122" font-size="11" fill="#6d28d9">resource.id &#8594; "A"&#160;&#160;&#160;id &#8594; "42"</text>
+        <line x1="220" y1="156" x2="220" y2="196" stroke="#64748b" stroke-width="1.4"/>
+        <line x1="670" y1="156" x2="670" y2="196" stroke="#64748b" stroke-width="1.4"/>
+        <line x1="220" y1="196" x2="670" y2="196" stroke="#64748b" stroke-width="1.4"/>
+        <line x1="445" y1="196" x2="445" y2="205" stroke="#64748b" stroke-width="1.4" marker-end="url(#ahk)"/>
+        <text x="455" y="184" font-size="10.5" fill="#64748b">resolve, scope, concatenate</text>
+        <rect x="30" y="209" width="840" height="38" rx="8" fill="#1e293b" stroke="#0f172a"/>
+        <text x="50" y="233" font-size="12.5" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Message:EMAIL_RECEIVED:A_42</text>
+        <text x="855" y="233" font-size="10.5" fill="#94a3b8" text-anchor="end">scope + resolved values</text>
+      </svg>
+    </div>
+    <p>Each key maps to a single entry whose value is the timestamp it was recorded, expiring by its own TTL. Because the object and event type are encoded into the key, lookups are independent and O(1).</p>
     <div class="fig">
       <div class="figcap">Redis keyspace: one flat key per deduplication key, each with its own TTL</div>
       <svg viewBox="0 0 900 210" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
         <rect x="30" y="20" width="840" height="130" rx="10" fill="#1e293b" stroke="#0f172a"/>
-        <text x="50" y="48" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Message:EMAIL_RECEIVED:&lt;id&gt;_&lt;createdDateTime&gt;   &#8594;  10:00:00Z   ttl 24h</text>
-        <text x="50" y="74" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Message:UPDATED:&lt;id&gt;_&lt;lastModified&gt;_&lt;folderId&gt; &#8594;  10:04:11Z   ttl 24h</text>
-        <text x="50" y="100" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Calendar:CREATED:&lt;id&gt;_&lt;createdDateTime&gt;       &#8594;  09:58:02Z   ttl 24h</text>
-        <text x="50" y="126" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Calendar:UPDATED:&lt;id&gt;_&lt;lastModified&gt;          &#8594;  10:03:47Z   ttl 24h</text>
+        <text x="50" y="48" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Message:EMAIL_RECEIVED:&lt;id&gt;_&lt;createdDateTime&gt;   &#8594;  10:00:00Z   ttl ~4h</text>
+        <text x="50" y="74" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Message:UPDATED:&lt;id&gt;_&lt;lastModified&gt;_&lt;folderId&gt; &#8594;  10:04:11Z   ttl ~4h</text>
+        <text x="50" y="100" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Calendar:CREATED:&lt;id&gt;_&lt;createdDateTime&gt;       &#8594;  09:58:02Z   ttl ~4h</text>
+        <text x="50" y="126" font-size="12" font-family="monospace" fill="#22c55e">dedup:&lt;connectionId&gt;:Calendar:UPDATED:&lt;id&gt;_&lt;lastModified&gt;          &#8594;  10:03:47Z   ttl ~4h</text>
         <text x="30" y="176" font-size="12" fill="#475569">key = connectionId (a GUID) : objectName : eventType : concatenated reference-field values (human-readable, not hashed)</text>
-        <text x="30" y="196" font-size="12" fill="#475569">each key carries its own TTL and expires automatically, so there is no prune sweep</text>
+        <text x="30" y="196" font-size="12" fill="#475569">each key expires automatically by its own TTL (sized below), so there is no prune sweep</text>
+      </svg>
+    </div>
+
+    <h3>TTL of keys</h3>
+    <p>Every key expires by native per-key TTL, so there is no prune sweep. The TTL must outlive every later poll that could re-surface the same record, so it is sized generously: <b>TTL = 4h + poll interval + lookBack</b>. Under-retention re-emits a record (a duplicate); over-retention only holds a key a while longer, so the design biases long. The look-back term covers the trailing window a poll re-scans; the interval term covers the gap to the next poll; the 4h floor absorbs slow or stuck polls, retries, reschedule overlap, and a Redis outage spanning several intervals (Section 7), so keys written before an outage still deduplicate once look-back resumes. This is the concrete default for the retention question in Section 13.</p>
+    <div class="fig">
+      <div class="figcap">TTL sizing: the key lives far longer than the window in which its record could re-surface</div>
+      <svg viewBox="0 0 900 172" width="100%" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif">
+        <rect x="90" y="40" width="720" height="22" rx="5" fill="#a7f3d0" stroke="#047857"/>
+        <text x="450" y="55" font-size="12" fill="#065f46" font-weight="700" text-anchor="middle">TTL = 4h + interval + lookBack</text>
+        <rect x="90" y="72" width="95" height="18" rx="4" fill="#fde68a" stroke="#b45309"/>
+        <text x="192" y="85" font-size="10.5" fill="#92400e">re-scan window = one lookBack</text>
+        <line x1="380" y1="36" x2="380" y2="112" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="4 3"/>
+        <text x="380" y="126" font-size="10.5" fill="#64748b" text-anchor="middle">next poll (+interval)</text>
+        <line x1="90" y1="110" x2="810" y2="110" stroke="#94a3b8" stroke-width="1.4"/>
+        <line x1="90" y1="105" x2="90" y2="115" stroke="#94a3b8"/>
+        <text x="90" y="128" font-size="10.5" fill="#1e3a5f" text-anchor="start" font-weight="700">key SET (poll A)</text>
+        <line x1="810" y1="105" x2="810" y2="115" stroke="#94a3b8"/>
+        <text x="810" y="128" font-size="10.5" fill="#047857" text-anchor="end" font-weight="700">expires</text>
+        <text x="450" y="156" font-size="11" fill="#64748b" text-anchor="middle">The key outlives every poll that could re-surface the record; the excess is a deliberate fail-safe margin.</text>
       </svg>
     </div>
 
@@ -753,7 +840,7 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
   <!-- 8 -->
   <div class="sec" id="s8">
     <div class="sechdr"><span class="secno">8</span><span class="secttl">Alternate Design Options</span></div>
-    <p class="summary">Two alternatives were considered. Both avoid new infrastructure, but neither scales as cleanly on the high-volume tail, because a blob must either hold the whole keyset in memory or perform per-key I/O.</p>
+    <p class="summary">Two alternatives were considered. Both avoid new infrastructure, but neither scales as cleanly on the high-volume tail.</p>
 
     <h3>Object-store blob <span class="pill pill-green">simple</span></h3>
     <ul>
@@ -780,7 +867,7 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
       <li><b>Blob-size distribution</b> is heavily skewed: the majority of blobs are small, with a heavy tail of large blobs where the whole-blob read-modify-write is costly.</li>
       <li><b>Latency.</b> Redis is already in the stack with a low single-digit-millisecond p99; object-store blob p99 is materially higher, so the heavy tail is where a keyed store pays off.</li>
     </ul>
-    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="dedup-load-assessment.html">dedup-load-assessment.html</a>, <a href="dedup-redis-load-by-region.html">dedup-redis-load-by-region.html</a>. Exact per-region figures are in those documents.</p>
+    <p class="src"><span class="lbl">Reference</span> &nbsp;<a href="dedup-redis-load-by-region.html">dedup-redis-load-by-region.html</a>. Exact per-region figures are in those documents.</p>
   </div>
 
   <!-- 10 -->
@@ -801,7 +888,7 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     </table>
     <div class="callout c-green">
       <span class="t">Recommendation</span>
-      <b>Redis is preferred because it scales</b>: O(1) per key, no resident keyset, native TTL, and one round trip per page once batched (Section 6). The <b>plaintext object-store blob per object is the simple option</b> and a reasonable fallback when the event volume does not justify a new Redis instance. The encrypted per-instance blob is retained only as the status quo.
+      <b>Redis is preferred because it scales</b> (the mechanics are in Section 6). The <b>plaintext object-store blob per object is the simple option</b> and a reasonable fallback when the event volume does not justify a new Redis instance; the encrypted per-instance blob is retained only as the status quo.
     </div>
   </div>
 
@@ -824,7 +911,7 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
       <ul style="margin:6px 0 0;">
         <li>Host the deduplication keyspace on it (the proposed store).</li>
         <li>Gallup can also use it for its own caching constructs (for example the configuration cache), so Gallup owns its Redis end-to-end instead of depending on Udon's shared cluster.</li>
-        <li>The decisive reason is operational coupling: Udon flushes its Redis on every deploy (the <code>bust-redis-cache</code> Helm hook), so a shared instance would wipe dedup keys and cause a burst of duplicate emits.</li>
+        <li>The decisive reason is the deploy-flush hazard above: on a shared instance every Udon deploy would wipe the dedup keys.</li>
         <li>A dedicated instance isolates blast radius and lets us size memory, eviction policy, and TTL independently.</li>
       </ul>
     </div>
@@ -837,10 +924,11 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     <table>
       <thead><tr><th style="width:30%">Decision</th><th>Rationale</th><th>Alternative rejected</th></tr></thead>
       <tbody>
-        <tr><td><b>Keyed store (Redis) is the proposed store</b></td><td>Scales to the heavy tail: O(1) per key, no resident keyset, native TTL, one round trip per page once batched</td><td>Object-store blob (simpler) and encrypted per-instance blob (status quo), whose keyset grows in memory</td></tr>
+        <tr><td><b>Keyed store (Redis) is the proposed store</b></td><td>Scales to the heavy tail without a resident keyset (Section 6)</td><td>Object-store blob (simpler) and encrypted per-instance blob (status quo), whose keyset grows in memory</td></tr>
         <tr><td><b>Single <code>lookBackTime</code> field</b></td><td>One control, with unambiguous 0 / &gt;0 semantics</td><td>Reusing <code>pollDelay</code> with an <code>enableLookBack</code> flag</td></tr>
         <tr><td><b>No <code>enableDedup</code> flag</b></td><td>Presence of <code>dedupReferenceFields</code> with the tenant flag already means on</td><td>A redundant explicit boolean</td></tr>
         <tr><td><b>Human-readable concatenated key</b></td><td>Debuggability; a dropped key is legible in logs</td><td>Hashing the concatenated fields</td></tr>
+        <tr><td><b>TTL = 4h + interval + lookBack</b></td><td>An event can re-surface only within one look-back window, so retention is bounded by look-back; the floor absorbs slow polls and Redis outages (Section 6)</td><td>A flat 24-hour retention, which over-retains</td></tr>
         <tr><td><b>Deduplication runs before <code>EventFilter</code></b></td><td>Duplicates must not count toward the matched-object halt, and should not be emitted</td><td>Deduplication after filtering, which miscounts limits and wastes filter work</td></tr>
         <tr><td><b>Two-phase Unbatch</b></td><td>The key needs <code>postHook</code>'s final <code>eventType</code>, and batching needs a page barrier</td><td>Deduplicating before Unbatch, which breaks because <code>postHook</code> reclassifies <code>eventType</code></td></tr>
         <tr><td><b><code>useHydrationBeforeDedup</code> defaults to false</b></td><td>Wire-natural (absent resolves to false) and the faster path (duplicates skip hydrate)</td><td>Defaulting to true; the partial-key caveat is documented for connector authors</td></tr>
@@ -855,7 +943,6 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     <ul>
       <li><b>Store choice confirmation.</b> Redis is proposed (Section 5) for its scaling; the plaintext object-store blob (Section 8) is the simple fallback if a new instance is not warranted. Confirm against the load and latency evidence in Section 9.</li>
       <li><b>Which Redis instance.</b> A dedicated Gallup Redis (recommended) versus Udon's shared instance, weighing new infrastructure per ring and region against the coupling risks in Section 11.</li>
-      <li><b>Retention model.</b> A flat 24 hours versus a look-back-bounded window. An event can only re-surface within one look-back window, and the bounded model shrinks the keyset substantially, easing the storage-scale concern.</li>
       <li><b>Check scoping.</b> Only events within the look-back overlap window can be cross-poll duplicates. The store check could be scoped to that slice rather than the whole page.</li>
       <li><b><code>useHydrationBeforeDedup</code> mechanism.</b> An explicit connector flag (simple, with a footgun) versus engine auto-derivation (resolve keys pre-hydrate and deduplicate early only when all fields are present).</li>
       <li><b>Interaction edge.</b> With <code>useHydrationBeforePostHooks</code> set to true, hydrate must run first, so <code>useHydrationBeforeDedup</code> set to false is effectively upgraded to true.</li>
@@ -868,13 +955,13 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
     <table>
       <thead><tr><th>Document</th><th>What it covers</th><th>Section</th></tr></thead>
       <tbody>
-        <tr><td><a href="dedup-store-fork-design.html">dedup-store-fork-design.html</a></td><td>The three storage options (Redis, object store, encrypted), compared in depth with diagrams and a worked example</td><td>5, 7, 8</td></tr>
+        <tr><td><a href="dedup-store-fork-design.html">dedup-store-fork-design.html</a></td><td>The three storage options (Redis, object store, encrypted), compared in depth with diagrams and a worked example</td><td>5, 8, 10</td></tr>
         <tr><td><a href="dedup-unbatch-two-phase-design.html">dedup-unbatch-two-phase-design.html</a></td><td>Two-phase Unbatch and <code>useHydrationBeforeDedup</code>; how batched deduplication runs</td><td>6</td></tr>
         <tr><td><a href="uselastpolldate.html">uselastpolldate.html</a></td><td>Data-date versus clock watermark model</td><td>2</td></tr>
         <tr><td><a href="outlook-dedup.html">outlook-dedup.html</a></td><td>Today's Outlook connector deduplication, prune, and limitations</td><td>2</td></tr>
         <tr><td><a href="dedup-load-assessment.html">dedup-load-assessment.html</a></td><td>Production poller-metric load and blob-size distribution</td><td>9</td></tr>
         <tr><td><a href="dedup-redis-load-by-region.html">dedup-redis-load-by-region.html</a></td><td>Load segmented per cloud region</td><td>9</td></tr>
-        <tr><td><a href="redis-usage-udon-gallup.html">redis-usage-udon-gallup.html</a></td><td>Udon and Gallup Redis inventory and the dedicated-instance case</td><td>10</td></tr>
+        <tr><td><a href="redis-usage-udon-gallup.html">redis-usage-udon-gallup.html</a></td><td>Udon and Gallup Redis inventory and the dedicated-instance case</td><td>11</td></tr>
       </tbody>
     </table>
     <p class="small">Additional artifacts: draw.io diagrams under <code>diagrams/drawio/</code> (trigger creation, look-back window, deduplication store options, and the two problem-statement diagrams). Confluence: parent proposal <a href="https://uipath.atlassian.net/wiki/x/doK1IxU">/x/doK1IxU</a> and contract sub-page <a href="https://uipath.atlassian.net/wiki/x/14DFIxU">/x/14DFIxU</a>.</p>
@@ -903,6 +990,28 @@ keys.forEach((k) =&gt; pipe.set(k, insertedAt, { NX: <span class="k">true</span>
       svg.setCurrentTime(0); svg.unpauseAnimations(); playing = true; setIcon();
     });
     setIcon();
+  });
+})();
+</script>
+<script>
+(function () {
+  var root = document.documentElement;
+  var saved = null;
+  try { saved = localStorage.getItem('theme'); } catch (e) {}
+  if (!saved && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) saved = 'dark';
+  if (saved === 'dark') root.setAttribute('data-theme', 'dark');
+  var btn = document.getElementById('theme-toggle');
+  function sync() {
+    var dark = root.getAttribute('data-theme') === 'dark';
+    btn.textContent = dark ? '☀' : '🌙';
+    btn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  sync();
+  btn.addEventListener('click', function () {
+    var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    root.setAttribute('data-theme', next);
+    try { localStorage.setItem('theme', next); } catch (e) {}
+    sync();
   });
 })();
 </script>
